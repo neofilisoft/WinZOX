@@ -62,8 +62,6 @@ __pycache__/
 *$py.class
 
 # Ignore
-*.hpp
-!extractor.hpp
 *.cpp
 !main.cpp
 !archive.cpp
