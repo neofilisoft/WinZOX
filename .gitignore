@@ -62,12 +62,23 @@ __pycache__/
 *$py.class
 
 # Ignore
+*.hpp
+!extractor.hpp
 *.cpp
 !main.cpp
 !archive.cpp
+!aes256.cpp
+!extractor.cpp
 
 # Config
 .env
 .env.*
 secrets.*
 private.*
+
+# CMake
+*.cmake
+*CMakeCache.txt
+
+# Algorithm
+gorgon.*
