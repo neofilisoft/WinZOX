@@ -39,3 +39,35 @@
 
 # debug information files
 *.dwo
+
+# Certificate
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+
+# Visual Studio files
+.vs/
+[vV]s/
+out/
+build/
+*.user
+*.userosscache
+*.sln.doccache
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore
+*.cpp
+!main.cpp
+!archive.cpp
+
+# Config
+.env
+.env.*
+secrets.*
+private.*
