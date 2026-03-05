@@ -2,11 +2,11 @@
 
 **WinZOX** is a file archiver focused on **own file format**, a **clean CLI**, and an internal architecture that stays maintainable as features grow.
 
-> Status: **On Developing**
+> Status: **Active development**
 
 ---
 
-## Why ZOX
+## Why WinZOX
 - **C++ performance**: predictable speed + easier native integration.
 - **Modular design**: add codecs/formats without turning the codebase into spaghetti.
 - **Practical UX**: progress, speed, ETA, cancel but without the drama.
@@ -36,9 +36,9 @@
 | `.zip` |Yes  |Yes | Standard |
 | `.7z`  | —  | Yes | Extract-only |
 | `.rar` | —  | Yes | Extract-only |
-| `.zox` | Yes | Yes | If you use a custom container |
+| `.zox` | Yes | Yes | Native |
 
-> ZOX is a WinZOX format.
+> .zox is WinZOX native format.
 ---
 
 ## Compression Presets (zstd example)
