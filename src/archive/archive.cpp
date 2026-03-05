@@ -1,6 +1,9 @@
 #include "archive/archive.hpp"
+#include "archive/archive_integrity.hpp"
 
 #include "crypto/aes256.hpp"
+#include "crypto/auth/archive_authentication.hpp"
+#include "crypto/key_derivation.hpp"
 #include "io/file_reader.hpp"
 #include "io/volume_reader.hpp"
 #include "io/volume_writer.hpp"
@@ -14,20 +17,25 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <unordered_map>
 
-namespace zipbox::archive {
+namespace winzox::archive {
 
 namespace fs = std::filesystem;
 
 namespace {
 
 constexpr char kLegacyMagic[] = "ZOX4";
-constexpr char kCurrentMagic[] = "ZOX5";
+constexpr char kPreviousMagicV5[] = "ZOX5";
+constexpr char kPreviousMagicV6[] = "ZOX6";
+constexpr char kCurrentMagic[] = "WZOX";
 constexpr char kFooterMagic[] = "ZCDR";
 constexpr uint8_t kEncryptedFlag = 0x01;
 constexpr uint8_t kSolidFlag = 0x02;
+constexpr uint8_t kAuthenticatedFlag = 0x04;
+constexpr size_t kAuthenticationTagSize = 32;
 
 struct LegacyHeader {
     ArchiveMetadata metadata;
@@ -42,6 +50,8 @@ struct CurrentHeader {
     crypto::EncryptionMetadata cryptoMetadata;
     uint64_t dataSectionPlainSize = 0;
     size_t dataOffset = 0;
+    bool usesExtendedFooter = false;
+    bool hasIterationField = false;
 };
 
 struct DirectoryIndex {
@@ -58,6 +68,9 @@ struct DirectoryFooter {
     uint64_t centralDirectoryPlainSize = 0;
     uint32_t centralDirectoryChecksum = 0;
     uint32_t entryCount = 0;
+    std::vector<uint8_t> sha512Digest;
+    std::vector<uint8_t> sha3_256Digest;
+    std::vector<uint8_t> authenticationTag;
 };
 
 struct BuiltArchiveSections {
@@ -118,6 +131,28 @@ size_t ToSizeT(uint64_t value, const char* label) {
         throw std::runtime_error(std::string(label) + " is too large for this platform");
     }
     return static_cast<size_t>(value);
+}
+
+std::vector<uint8_t> ComputeAuthenticationTag(const uint8_t* data,
+                                              size_t dataSize,
+                                              const std::string& password,
+                                              const crypto::EncryptionMetadata& metadata) {
+    return crypto::auth::ComputeArchiveAuthenticationTag(
+        data,
+        dataSize,
+        password,
+        metadata.salt,
+        metadata.iterations);
+}
+
+bool AuthenticationTagsMatch(const std::vector<uint8_t>& expected, const std::vector<uint8_t>& actual) {
+    if (expected.size() != actual.size()) {
+        return false;
+    }
+    if (expected.empty()) {
+        return true;
+    }
+    return integrity::DigestsEqual(expected.data(), actual.data(), expected.size());
 }
 
 uint64_t CurrentUnixTime() {
@@ -237,24 +272,21 @@ fs::path CommonBaseRoot(const std::vector<fs::path>& inputPaths) {
 
 crypto::EncryptionMetadata ReadEncryptionMetadata(const std::vector<uint8_t>& raw,
                                                  size_t& offset,
-                                                 crypto::EncryptionAlgorithm algorithm) {
+                                                 crypto::EncryptionAlgorithm algorithm,
+                                                 bool includeIterations) {
     crypto::EncryptionMetadata metadata;
     metadata.salt = ReadBytes(raw, offset, 16);
     metadata.ivPrimary = ReadBytes(raw, offset, 16);
     if (algorithm == crypto::EncryptionAlgorithm::Gorgon) {
         metadata.ivSecondary = ReadBytes(raw, offset, 16);
     }
-    return metadata;
-}
-
-void WriteEncryptionMetadata(io::VolumeWriter& writer,
-                             const crypto::EncryptionMetadata& metadata,
-                             crypto::EncryptionAlgorithm algorithm) {
-    writer.Write(reinterpret_cast<const char*>(metadata.salt.data()), metadata.salt.size());
-    writer.Write(reinterpret_cast<const char*>(metadata.ivPrimary.data()), metadata.ivPrimary.size());
-    if (algorithm == crypto::EncryptionAlgorithm::Gorgon) {
-        writer.Write(reinterpret_cast<const char*>(metadata.ivSecondary.data()), metadata.ivSecondary.size());
+    metadata.iterations = includeIterations
+        ? ReadValue<uint32_t>(raw, offset)
+        : crypto::kLegacyKdfIterations;
+    if (includeIterations && metadata.iterations < crypto::kMinKdfIterations) {
+        throw std::runtime_error("Archive KDF iteration count is below the minimum security threshold");
     }
+    return metadata;
 }
 
 crypto::EncryptionMetadata DeriveDirectoryMetadata(const crypto::EncryptionMetadata& metadata,
@@ -319,7 +351,11 @@ LegacyHeader ParseLegacyHeader(const std::vector<uint8_t>& raw) {
     header.metadata.comment = ReadString(raw, offset, commentLength);
 
     if (header.metadata.encrypted) {
-        header.cryptoMetadata = ReadEncryptionMetadata(raw, offset, header.metadata.encryptionAlgorithm);
+        header.cryptoMetadata = ReadEncryptionMetadata(
+            raw,
+            offset,
+            header.metadata.encryptionAlgorithm,
+            false);
     } else {
         header.metadata.encryptionAlgorithm = crypto::EncryptionAlgorithm::None;
     }
@@ -330,14 +366,29 @@ LegacyHeader ParseLegacyHeader(const std::vector<uint8_t>& raw) {
 }
 
 CurrentHeader ParseCurrentHeader(const std::vector<uint8_t>& raw) {
-    if (!HasMagic(raw, kCurrentMagic)) {
+    const bool isCurrentFormat = HasMagic(raw, kCurrentMagic);
+    const bool isPreviousFormatV6 = HasMagic(raw, kPreviousMagicV6);
+    const bool isPreviousFormatV5 = HasMagic(raw, kPreviousMagicV5);
+    if (!isCurrentFormat && !isPreviousFormatV6 && !isPreviousFormatV5) {
         throw std::runtime_error("Invalid .zox archive header");
     }
 
     size_t offset = 4;
     CurrentHeader header;
+    header.usesExtendedFooter = isCurrentFormat;
+    header.hasIterationField = isCurrentFormat;
     const uint8_t flags = ReadValue<uint8_t>(raw, offset);
     header.metadata.encrypted = (flags & kEncryptedFlag) != 0;
+    header.metadata.solid = (flags & kSolidFlag) != 0;
+    header.metadata.authenticated = (flags & kAuthenticatedFlag) != 0;
+    header.metadata.integritySha512 = isCurrentFormat;
+    header.metadata.integritySha3_256 = isCurrentFormat;
+    if (header.metadata.authenticated && isPreviousFormatV5) {
+        throw std::runtime_error("Archive authentication flag is not supported by this archive format");
+    }
+    if (header.metadata.authenticated && !header.metadata.encrypted) {
+        throw std::runtime_error("Authenticated archives must be encrypted");
+    }
     header.metadata.encryptionAlgorithm = static_cast<crypto::EncryptionAlgorithm>(ReadValue<uint8_t>(raw, offset));
     if (header.metadata.encrypted && header.metadata.encryptionAlgorithm == crypto::EncryptionAlgorithm::None) {
         throw std::runtime_error("Archive declares encryption but has no encryption mode");
@@ -350,9 +401,14 @@ CurrentHeader ParseCurrentHeader(const std::vector<uint8_t>& raw) {
     header.metadata.comment = ReadString(raw, offset, commentLength);
 
     if (header.metadata.encrypted) {
-        header.cryptoMetadata = ReadEncryptionMetadata(raw, offset, header.metadata.encryptionAlgorithm);
+        header.cryptoMetadata = ReadEncryptionMetadata(
+            raw,
+            offset,
+            header.metadata.encryptionAlgorithm,
+            header.hasIterationField);
     } else {
         header.metadata.encryptionAlgorithm = crypto::EncryptionAlgorithm::None;
+        header.cryptoMetadata.iterations = 0;
     }
 
     if (header.metadata.solid) {
@@ -363,13 +419,17 @@ CurrentHeader ParseCurrentHeader(const std::vector<uint8_t>& raw) {
     return header;
 }
 
-DirectoryFooter ParseDirectoryFooter(const std::vector<uint8_t>& raw) {
-    constexpr size_t kFooterSize = 4 + sizeof(uint64_t) * 3 + sizeof(uint32_t) * 2;
-    if (raw.size() < kFooterSize) {
+DirectoryFooter ParseDirectoryFooter(const std::vector<uint8_t>& raw, const CurrentHeader& header) {
+    const size_t footerSize =
+        4 + sizeof(uint64_t) * 3 + sizeof(uint32_t) * 2 +
+        (header.metadata.integritySha512 ? integrity::kSha512DigestSize : 0) +
+        (header.metadata.integritySha3_256 ? integrity::kSha3_256DigestSize : 0) +
+        (header.metadata.authenticated ? kAuthenticationTagSize : 0);
+    if (raw.size() < footerSize) {
         throw std::runtime_error("Archive is truncated");
     }
 
-    size_t offset = raw.size() - kFooterSize;
+    size_t offset = raw.size() - footerSize;
     if (std::memcmp(raw.data() + offset, kFooterMagic, 4) != 0) {
         throw std::runtime_error("Archive central directory footer is missing");
     }
@@ -381,13 +441,83 @@ DirectoryFooter ParseDirectoryFooter(const std::vector<uint8_t>& raw) {
     footer.centralDirectoryPlainSize = ReadValue<uint64_t>(raw, offset);
     footer.centralDirectoryChecksum = ReadValue<uint32_t>(raw, offset);
     footer.entryCount = ReadValue<uint32_t>(raw, offset);
+    if (header.metadata.integritySha512) {
+        footer.sha512Digest = ReadBytes(raw, offset, integrity::kSha512DigestSize);
+    }
+    if (header.metadata.integritySha3_256) {
+        footer.sha3_256Digest = ReadBytes(raw, offset, integrity::kSha3_256DigestSize);
+    }
+    if (header.metadata.authenticated) {
+        footer.authenticationTag = ReadBytes(raw, offset, kAuthenticationTagSize);
+    }
+    if (offset != raw.size()) {
+        throw std::runtime_error("Archive footer metadata is inconsistent");
+    }
     return footer;
+}
+
+void VerifyArchiveIntegrityDigests(const std::vector<uint8_t>& raw,
+                                   const CurrentHeader& header,
+                                   const DirectoryFooter& footer) {
+    if (!header.metadata.integritySha512 && !header.metadata.integritySha3_256) {
+        return;
+    }
+
+    const size_t digestBytes =
+        (header.metadata.integritySha512 ? footer.sha512Digest.size() : 0) +
+        (header.metadata.integritySha3_256 ? footer.sha3_256Digest.size() : 0);
+    const size_t authenticationBytes = header.metadata.authenticated ? footer.authenticationTag.size() : 0;
+    if (raw.size() < digestBytes + authenticationBytes) {
+        throw std::runtime_error("Archive integrity metadata is truncated");
+    }
+
+    const size_t digestedSize = raw.size() - digestBytes - authenticationBytes;
+    const integrity::ArchiveIntegrityDigests computed =
+        integrity::ComputeArchiveIntegrityDigests(raw.data(), digestedSize);
+    if (header.metadata.integritySha512 &&
+        (footer.sha512Digest.size() != integrity::kSha512DigestSize ||
+         !integrity::DigestsEqual(footer.sha512Digest.data(), computed.sha512.data(), integrity::kSha512DigestSize))) {
+        throw std::runtime_error("Archive SHA-512 integrity check failed");
+    }
+    if (header.metadata.integritySha3_256 &&
+        (footer.sha3_256Digest.size() != integrity::kSha3_256DigestSize ||
+         !integrity::DigestsEqual(footer.sha3_256Digest.data(), computed.sha3_256.data(), integrity::kSha3_256DigestSize))) {
+        throw std::runtime_error("Archive SHA3-256 integrity check failed");
+    }
+}
+
+void VerifyArchiveAuthentication(const std::vector<uint8_t>& raw,
+                                 const CurrentHeader& header,
+                                 const DirectoryFooter& footer,
+                                 const std::string& password) {
+    if (!header.metadata.authenticated) {
+        return;
+    }
+    if (footer.authenticationTag.size() != kAuthenticationTagSize) {
+        throw std::runtime_error("Archive authentication tag is invalid");
+    }
+    if (raw.size() < footer.authenticationTag.size()) {
+        throw std::runtime_error("Archive authentication tag is truncated");
+    }
+
+    const size_t authenticatedDataSize = raw.size() - footer.authenticationTag.size();
+    const std::vector<uint8_t> computedTag = ComputeAuthenticationTag(
+        raw.data(),
+        authenticatedDataSize,
+        password,
+        header.cryptoMetadata);
+    if (!AuthenticationTagsMatch(footer.authenticationTag, computedTag)) {
+        throw std::runtime_error("Archive authentication failed (wrong password or modified data)");
+    }
 }
 
 DirectoryIndex ParseDirectoryIndex(const std::vector<uint8_t>& raw,
                                    const CurrentHeader& header,
                                    const DirectoryFooter& footer,
                                    const std::string& password) {
+    VerifyArchiveIntegrityDigests(raw, header, footer);
+    VerifyArchiveAuthentication(raw, header, footer, password);
+
     if (footer.centralDirectoryOffset < header.dataOffset) {
         throw std::runtime_error("Archive central directory offset is invalid");
     }
@@ -526,7 +656,7 @@ ArchiveContents ReadArchiveLegacy(const std::vector<uint8_t>& raw, const std::st
 
 std::vector<uint8_t> BuildLegacyPayload(const std::vector<fs::path>& files,
                                         const fs::path& baseRoot,
-                                        const ZipBoxConfig& config,
+                                        const WinZOXConfig& config,
                                         const utils::ProgressCallback& progressCallback) {
     if (files.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
         throw std::runtime_error("Archive contains too many files");
@@ -556,7 +686,9 @@ std::vector<uint8_t> BuildLegacyPayload(const std::vector<fs::path>& files,
             rawData,
             algorithm,
             config.zstdLevel,
-            config.zlibLevel);
+            config.zlibLevel,
+            config.lzmaLevel,
+            config.threadCount);
 
         AppendValue<uint16_t>(payload, static_cast<uint16_t>(relativePath.size()));
         AppendBytes(payload, relativePath.data(), relativePath.size());
@@ -577,7 +709,7 @@ std::vector<uint8_t> BuildLegacyPayload(const std::vector<fs::path>& files,
 
 BuiltArchiveSections BuildArchiveSections(const std::vector<fs::path>& files,
                                          const fs::path& baseRoot,
-                                         const ZipBoxConfig& config,
+                                         const WinZOXConfig& config,
                                          const crypto::EncryptionMetadata* cryptoMetadata,
                                          crypto::EncryptionAlgorithm encryptionAlgorithm,
                                          const utils::ProgressCallback& progressCallback) {
@@ -617,7 +749,9 @@ BuiltArchiveSections BuildArchiveSections(const std::vector<fs::path>& files,
                 rawData,
                 algorithm,
                 config.zstdLevel,
-                config.zlibLevel);
+                config.zlibLevel,
+                config.lzmaLevel,
+                config.threadCount);
             encodedData = storedData;
             if (cryptoMetadata != nullptr) {
                 const crypto::EncryptionMetadata entryMetadata =
@@ -660,7 +794,9 @@ BuiltArchiveSections BuildArchiveSections(const std::vector<fs::path>& files,
             solidPlainData,
             config.defaultAlgorithm,
             config.zstdLevel,
-            config.zlibLevel);
+            config.zlibLevel,
+            config.lzmaLevel,
+            config.threadCount);
         sections.dataSectionPlainSize = static_cast<uint64_t>(compressedSolidData.size());
         sections.dataSection = compressedSolidData;
         if (cryptoMetadata != nullptr) {
@@ -685,7 +821,7 @@ std::string RelativePathForArchive(const fs::path& filePath, const fs::path& bas
 
 std::string EnsureZipExtension(const std::string& outputPath) {
     const fs::path path(outputPath);
-    if (zipbox::utils::ToLower(path.extension().string()) == ".zip") {
+    if (winzox::utils::ToLower(path.extension().string()) == ".zip") {
         return outputPath;
     }
     return outputPath + ".zip";
@@ -700,28 +836,28 @@ std::vector<uint8_t> ReadAllArchiveBytes(const std::string& filename) {
 bool LooksLikeZoxArchive(const std::string& filename) {
     const fs::path path(filename);
     const std::string extension = utils::ToLower(path.extension().string());
-    if (extension == ".zox" || utils::IsSplitZoxExtension(extension)) {
-        return true;
-    }
-
+    const bool extensionSuggestsZox = extension == ".zox" || utils::IsSplitZoxExtension(extension);
     if (!fs::exists(path)) {
-        return false;
+        return extensionSuggestsZox;
     }
 
     const std::vector<uint8_t> header = io::ReadFileBytes(path);
-    return HasMagic(header, kLegacyMagic) || HasMagic(header, kCurrentMagic);
+    return HasMagic(header, kLegacyMagic) ||
+           HasMagic(header, kPreviousMagicV5) ||
+           HasMagic(header, kPreviousMagicV6) ||
+           HasMagic(header, kCurrentMagic);
 }
 
 void CreateArchive(const std::string& inputPath,
                    const std::string& outputBase,
-                   const ZipBoxConfig& config,
+                   const WinZOXConfig& config,
                    const utils::ProgressCallback& progressCallback) {
     CreateArchive(std::vector<std::string> { inputPath }, outputBase, config, progressCallback);
 }
 
 void CreateArchive(const std::vector<std::string>& inputPaths,
                    const std::string& outputBase,
-                   const ZipBoxConfig& config,
+                   const WinZOXConfig& config,
                    const utils::ProgressCallback& progressCallback) {
     const std::vector<fs::path> normalizedInputs = NormalizeInputPaths(inputPaths);
     const fs::path baseRoot = CommonBaseRoot(normalizedInputs);
@@ -730,6 +866,9 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
     ArchiveMetadata metadata;
     metadata.encrypted = !config.password.empty();
     metadata.solid = false;
+    metadata.authenticated = metadata.encrypted;
+    metadata.integritySha512 = true;
+    metadata.integritySha3_256 = true;
     metadata.encryptionAlgorithm = metadata.encrypted
         ? config.encryptionAlgorithm
         : crypto::EncryptionAlgorithm::None;
@@ -741,6 +880,9 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
     crypto::EncryptionMetadata cryptoMetadata;
     if (metadata.encrypted) {
         cryptoMetadata = crypto::CreateEncryptionMetadata(metadata.encryptionAlgorithm);
+        if (cryptoMetadata.iterations < crypto::kMinKdfIterations) {
+            throw std::runtime_error("KDF iteration count must be at least 100000");
+        }
     }
 
     BuiltArchiveSections sections = BuildArchiveSections(
@@ -765,33 +907,61 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
     }
 
     io::VolumeWriter writer(outputBase, config.splitSize);
-    writer.Write(kCurrentMagic, 4);
+    integrity::ArchiveIntegrityAccumulator integrityContext;
+    std::unique_ptr<crypto::auth::ArchiveAuthenticator> authenticationContext;
+    if (metadata.authenticated) {
+        authenticationContext = std::make_unique<crypto::auth::ArchiveAuthenticator>(
+            config.password,
+            cryptoMetadata.salt,
+            cryptoMetadata.iterations);
+    }
+
+    auto writeWithContexts = [&](const void* data, size_t size, bool updateIntegrity, bool updateAuthentication) {
+        writer.Write(reinterpret_cast<const char*>(data), size);
+        if (size == 0) {
+            return;
+        }
+        if (updateIntegrity) {
+            integrityContext.Update(data, size);
+        }
+        if (updateAuthentication && authenticationContext != nullptr) {
+            authenticationContext->Update(data, size);
+        }
+    };
+
+    writeWithContexts(kCurrentMagic, 4, true, true);
 
     const uint8_t flags =
         (metadata.encrypted ? kEncryptedFlag : 0) |
-        (metadata.solid ? kSolidFlag : 0);
-    writer.Write(reinterpret_cast<const char*>(&flags), sizeof(flags));
+        (metadata.solid ? kSolidFlag : 0) |
+        (metadata.authenticated ? kAuthenticatedFlag : 0);
+    writeWithContexts(&flags, sizeof(flags), true, true);
 
     const uint8_t encryptionAlgo = static_cast<uint8_t>(metadata.encryptionAlgorithm);
-    writer.Write(reinterpret_cast<const char*>(&encryptionAlgo), sizeof(encryptionAlgo));
+    writeWithContexts(&encryptionAlgo, sizeof(encryptionAlgo), true, true);
 
     const uint8_t defaultAlgo = static_cast<uint8_t>(metadata.defaultAlgorithm);
-    writer.Write(reinterpret_cast<const char*>(&defaultAlgo), sizeof(defaultAlgo));
+    writeWithContexts(&defaultAlgo, sizeof(defaultAlgo), true, true);
 
-    writer.Write(reinterpret_cast<const char*>(&metadata.createdUnixTime), sizeof(metadata.createdUnixTime));
-    writer.Write(reinterpret_cast<const char*>(&metadata.payloadChecksum), sizeof(metadata.payloadChecksum));
+    writeWithContexts(&metadata.createdUnixTime, sizeof(metadata.createdUnixTime), true, true);
+    writeWithContexts(&metadata.payloadChecksum, sizeof(metadata.payloadChecksum), true, true);
 
     const uint32_t commentLength = static_cast<uint32_t>(metadata.comment.size());
-    writer.Write(reinterpret_cast<const char*>(&commentLength), sizeof(commentLength));
+    writeWithContexts(&commentLength, sizeof(commentLength), true, true);
     if (commentLength > 0) {
-        writer.Write(metadata.comment.data(), commentLength);
+        writeWithContexts(metadata.comment.data(), commentLength, true, true);
     }
 
     if (metadata.encrypted) {
-        WriteEncryptionMetadata(writer, cryptoMetadata, metadata.encryptionAlgorithm);
+        writeWithContexts(cryptoMetadata.salt.data(), cryptoMetadata.salt.size(), true, true);
+        writeWithContexts(cryptoMetadata.ivPrimary.data(), cryptoMetadata.ivPrimary.size(), true, true);
+        if (metadata.encryptionAlgorithm == crypto::EncryptionAlgorithm::Gorgon) {
+            writeWithContexts(cryptoMetadata.ivSecondary.data(), cryptoMetadata.ivSecondary.size(), true, true);
+        }
+        writeWithContexts(&cryptoMetadata.iterations, sizeof(cryptoMetadata.iterations), true, true);
     }
     if (metadata.solid) {
-        writer.Write(reinterpret_cast<const char*>(&sections.dataSectionPlainSize), sizeof(sections.dataSectionPlainSize));
+        writeWithContexts(&sections.dataSectionPlainSize, sizeof(sections.dataSectionPlainSize), true, true);
     }
 
     const uint64_t headerSize =
@@ -802,7 +972,7 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
         sizeof(uint32_t) +
         static_cast<uint64_t>(commentLength) +
         static_cast<uint64_t>(metadata.encrypted
-            ? cryptoMetadata.salt.size() + cryptoMetadata.ivPrimary.size() + cryptoMetadata.ivSecondary.size()
+            ? cryptoMetadata.salt.size() + cryptoMetadata.ivPrimary.size() + cryptoMetadata.ivSecondary.size() + sizeof(uint32_t)
             : 0) +
         static_cast<uint64_t>(metadata.solid ? sizeof(uint64_t) : 0);
     const uint64_t dataSectionStoredSize = static_cast<uint64_t>(sections.dataSection.size());
@@ -810,20 +980,32 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
     const uint64_t centralDirectoryOffset = headerSize + dataSectionStoredSize;
 
     if (!sections.dataSection.empty()) {
-        writer.Write(reinterpret_cast<const char*>(sections.dataSection.data()), sections.dataSection.size());
+        writeWithContexts(sections.dataSection.data(), sections.dataSection.size(), true, true);
     }
     if (!sections.centralDirectory.empty()) {
-        writer.Write(reinterpret_cast<const char*>(sections.centralDirectory.data()), sections.centralDirectory.size());
+        writeWithContexts(sections.centralDirectory.data(), sections.centralDirectory.size(), true, true);
     }
 
-    writer.Write(kFooterMagic, 4);
-    writer.Write(reinterpret_cast<const char*>(&centralDirectoryOffset), sizeof(centralDirectoryOffset));
-    writer.Write(reinterpret_cast<const char*>(&centralDirectoryStoredSize), sizeof(centralDirectoryStoredSize));
-    writer.Write(reinterpret_cast<const char*>(&centralDirectoryPlainSize), sizeof(centralDirectoryPlainSize));
-    writer.Write(reinterpret_cast<const char*>(&metadata.payloadChecksum), sizeof(metadata.payloadChecksum));
+    writeWithContexts(kFooterMagic, 4, true, true);
+    writeWithContexts(&centralDirectoryOffset, sizeof(centralDirectoryOffset), true, true);
+    writeWithContexts(&centralDirectoryStoredSize, sizeof(centralDirectoryStoredSize), true, true);
+    writeWithContexts(&centralDirectoryPlainSize, sizeof(centralDirectoryPlainSize), true, true);
+    writeWithContexts(&metadata.payloadChecksum, sizeof(metadata.payloadChecksum), true, true);
 
     const uint32_t entryCount = static_cast<uint32_t>(files.size());
-    writer.Write(reinterpret_cast<const char*>(&entryCount), sizeof(entryCount));
+    writeWithContexts(&entryCount, sizeof(entryCount), true, true);
+
+    const integrity::ArchiveIntegrityDigests integrityDigests = integrityContext.Finalize();
+    writeWithContexts(integrityDigests.sha512.data(), integrityDigests.sha512.size(), false, true);
+    writeWithContexts(integrityDigests.sha3_256.data(), integrityDigests.sha3_256.size(), false, true);
+
+    if (authenticationContext != nullptr) {
+        const std::vector<uint8_t> authenticationTag = authenticationContext->Finalize();
+        if (authenticationTag.size() != kAuthenticationTagSize) {
+            throw std::runtime_error("Archive authentication tag length is invalid");
+        }
+        writer.Write(reinterpret_cast<const char*>(authenticationTag.data()), authenticationTag.size());
+    }
 
     writer.Close();
     ReportProgress(progressCallback, 1, 1, fs::path(outputBase).filename().u8string(), "Archive created");
@@ -831,14 +1013,14 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
 
 void CreateZipArchive(const std::string& inputPath,
                       const std::string& outputPath,
-                      const ZipBoxConfig& config,
+                      const WinZOXConfig& config,
                       const utils::ProgressCallback& progressCallback) {
     CreateZipArchive(std::vector<std::string> { inputPath }, outputPath, config, progressCallback);
 }
 
 void CreateZipArchive(const std::vector<std::string>& inputPaths,
                       const std::string& outputPath,
-                      const ZipBoxConfig& config,
+                      const WinZOXConfig& config,
                       const utils::ProgressCallback& progressCallback) {
     if (!config.password.empty()) {
         throw std::runtime_error("ZIP creation does not support encryption in this version");
@@ -936,9 +1118,10 @@ void CreateZipArchive(const std::vector<std::string>& inputPaths,
 
 ArchiveMetadata ReadArchiveMetadata(const std::string& filename) {
     const std::vector<uint8_t> raw = ReadAllArchiveBytes(filename);
-    if (HasMagic(raw, kCurrentMagic)) {
+    if (HasMagic(raw, kCurrentMagic) || HasMagic(raw, kPreviousMagicV6) || HasMagic(raw, kPreviousMagicV5)) {
         CurrentHeader header = ParseCurrentHeader(raw);
-        const DirectoryFooter footer = ParseDirectoryFooter(raw);
+        const DirectoryFooter footer = ParseDirectoryFooter(raw, header);
+        VerifyArchiveIntegrityDigests(raw, header, footer);
         if (header.metadata.payloadChecksum != footer.centralDirectoryChecksum) {
             throw std::runtime_error("Archive central directory checksum metadata is inconsistent");
         }
@@ -955,9 +1138,9 @@ ArchiveMetadata ReadArchiveMetadata(const std::string& filename) {
 
 std::vector<ArchiveEntryInfo> ReadArchiveIndex(const std::string& filename, const std::string& password) {
     const std::vector<uint8_t> raw = ReadAllArchiveBytes(filename);
-    if (HasMagic(raw, kCurrentMagic)) {
+    if (HasMagic(raw, kCurrentMagic) || HasMagic(raw, kPreviousMagicV6) || HasMagic(raw, kPreviousMagicV5)) {
         const CurrentHeader header = ParseCurrentHeader(raw);
-        const DirectoryFooter footer = ParseDirectoryFooter(raw);
+        const DirectoryFooter footer = ParseDirectoryFooter(raw, header);
         const DirectoryIndex index = ParseDirectoryIndex(raw, header, footer, password);
         return index.entries;
     }
@@ -981,12 +1164,14 @@ ArchiveContents ReadArchive(const std::string& filename, const std::string& pass
         return ReadArchiveLegacy(raw, password);
     }
 
-    if (!HasMagic(raw, kCurrentMagic)) {
+    if (!HasMagic(raw, kCurrentMagic) &&
+        !HasMagic(raw, kPreviousMagicV6) &&
+        !HasMagic(raw, kPreviousMagicV5)) {
         throw std::runtime_error("Invalid .zox archive header");
     }
 
     const CurrentHeader header = ParseCurrentHeader(raw);
-    const DirectoryFooter footer = ParseDirectoryFooter(raw);
+    const DirectoryFooter footer = ParseDirectoryFooter(raw, header);
     const DirectoryIndex directory = ParseDirectoryIndex(raw, header, footer, password);
 
     if (footer.centralDirectoryOffset < header.dataOffset) {
@@ -1124,4 +1309,4 @@ ArchiveContents ReadArchive(const std::string& filename, const std::string& pass
     return contents;
 }
 
-} // namespace zipbox::archive
+} // namespace winzox::archive
