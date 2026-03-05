@@ -43,15 +43,13 @@
 ## Supported Formats
 | Format | Create | Extract | Notes |
 
-|---|---:|---:|---|
+| `.zox` | Yes    |  Yes   | WinZOX native format |
 
-| `.zox` | Yes | Yes | WinZOX native format |
+| `.zip` | Yes   | Yes  | Standard ZIP workflow |
 
-| `.zip` | Yes | Yes | Standard ZIP workflow |
+| `.7z` | No     | Yes  | Extract-only |
 
-| `.7z` | No | Yes | Extract-only |
-
-| `.rar` | No | Yes | Extract-only |
+| `.rar` | No   | Yes | Extract-only |
 
 > `.zox` is WinZOX native format.
 ---
