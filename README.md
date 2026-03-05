@@ -56,10 +56,10 @@ These are **recommended defaults** for a modern archiver
 
 | Preset | zstd level | Goal |
 |-----|--------|----------|
-| Fast | 5 | very fast, decent ratio |
-| Normal | 8 | balanced default |
-| Maximum | 15 | smaller archive, slower |
-| Ultra | 20 | strongest compression, much slower |
+| Fast | 3-5 | very fast, decent ratio |
+| Normal | 8-12 | balanced default |
+| Maximum | 15-20 | smaller archive, slower |
+| Ultra | 22-30 | strongest compression, much slower |
 
 ---
 
