@@ -1,4 +1,4 @@
-﻿#include "extraction/extractor.hpp"
+#include "extraction/extractor.hpp"
 
 #include "archive/archive.hpp"
 #include "compression/compressor.hpp"
@@ -30,6 +30,49 @@ void ReportProgress(const utils::ProgressCallback& progressCallback,
     if (!progressCallback(utils::ProgressInfo { completedUnits, totalUnits, currentItem, statusText })) {
         throw std::runtime_error("Operation canceled");
     }
+}
+
+fs::path ResolveOutputPathForWrite(const fs::path& destinationRoot,
+                                   const std::string& archiveEntryPath,
+                                   const OverwriteCallback& overwriteCallback,
+                                   bool& replaceAll) {
+    fs::path candidatePath = winzox::utils::ResolveSafeOutputPath(destinationRoot, archiveEntryPath);
+    if (!fs::exists(candidatePath) || replaceAll) {
+        return candidatePath;
+    }
+
+    if (!overwriteCallback) {
+        return candidatePath;
+    }
+
+    while (fs::exists(candidatePath) && !replaceAll) {
+        const OverwriteDecision decision = overwriteCallback(candidatePath.u8string(), archiveEntryPath);
+        switch (decision.action) {
+        case OverwriteAction::Replace:
+            return candidatePath;
+
+        case OverwriteAction::ReplaceAll:
+            replaceAll = true;
+            return candidatePath;
+
+        case OverwriteAction::Cancel:
+            throw std::runtime_error("Operation canceled");
+
+        case OverwriteAction::Rename: {
+            if (decision.renamedPath.empty()) {
+                throw std::runtime_error("Rename target cannot be empty");
+            }
+            fs::path renamedPath = fs::u8path(decision.renamedPath);
+            if (!renamedPath.is_absolute() && !renamedPath.has_root_name() && !renamedPath.has_root_directory()) {
+                renamedPath = winzox::utils::ResolveSafeOutputPath(destinationRoot, decision.renamedPath);
+            }
+            candidatePath = std::move(renamedPath);
+            break;
+        }
+        }
+    }
+
+    return candidatePath;
 }
 
 uint64_t CalculateTotalEntryUnits(const std::vector<winzox::archive::ArchiveEntryInfo>& entries) {
@@ -79,7 +122,8 @@ std::vector<winzox::archive::ArchiveEntryInfo> ListGenericArchiveEntries(const s
 
 void ExtractGenericArchive(const std::string& filename,
                           const std::string& destination,
-                          const utils::ProgressCallback& progressCallback) {
+                          const utils::ProgressCallback& progressCallback,
+                          const OverwriteCallback& overwriteCallback) {
     const std::vector<winzox::archive::ArchiveEntryInfo> entries = ListGenericArchiveEntries(filename);
     const uint64_t totalUnits = CalculateTotalEntryUnits(entries);
     uint64_t completedUnits = 0;
@@ -111,14 +155,20 @@ void ExtractGenericArchive(const std::string& filename,
         throw std::runtime_error("Failed to open archive: " + message);
     }
 
-    fs::create_directories(fs::path(destination));
+    const fs::path destinationRoot(destination);
+    fs::create_directories(destinationRoot);
     ReportProgress(progressCallback, 0, totalUnits, "", "Preparing extraction");
+    bool replaceAll = false;
 
     archive_entry* entry = nullptr;
     int result = ARCHIVE_OK;
     while ((result = archive_read_next_header(reader, &entry)) == ARCHIVE_OK) {
         const std::string currentFile = archive_entry_pathname(entry) ? archive_entry_pathname(entry) : "";
-        const fs::path outputPath = winzox::utils::ResolveSafeOutputPath(fs::path(destination), currentFile);
+        const int entryFileType = archive_entry_filetype(entry);
+        const bool isDirectory = (entryFileType & AE_IFDIR) == AE_IFDIR;
+        const fs::path outputPath = isDirectory
+            ? winzox::utils::ResolveSafeOutputPath(destinationRoot, currentFile)
+            : ResolveOutputPathForWrite(destinationRoot, currentFile, overwriteCallback, replaceAll);
         archive_entry_set_pathname(entry, outputPath.string().c_str());
 
         if (archive_write_header(writer, entry) < ARCHIVE_OK) {
@@ -281,7 +331,8 @@ std::vector<uint8_t> ReadGenericArchiveEntry(const std::string& filename, size_t
 void ExtractArchive(const std::string& filename,
                     const std::string& destination,
                     const std::string& password,
-                    const utils::ProgressCallback& progressCallback) {
+                    const utils::ProgressCallback& progressCallback,
+                    const OverwriteCallback& overwriteCallback) {
     if (winzox::archive::LooksLikeZoxArchive(filename)) {
         const winzox::archive::ArchiveContents contents = winzox::archive::ReadArchive(filename, password);
         const fs::path destinationRoot(destination);
@@ -293,6 +344,7 @@ void ExtractArchive(const std::string& filename,
         }
         const uint64_t totalUnits = CalculateTotalEntryUnits(entryInfos);
         uint64_t completedUnits = 0;
+        bool replaceAll = false;
 
         ReportProgress(progressCallback, 0, totalUnits, "", "Preparing extraction");
 
@@ -305,7 +357,8 @@ void ExtractArchive(const std::string& filename,
                 throw std::runtime_error("CRC32 mismatch for entry: " + entry.info.path);
             }
 
-            const fs::path outputPath = winzox::utils::ResolveSafeOutputPath(destinationRoot, entry.info.path);
+            const fs::path outputPath =
+                ResolveOutputPathForWrite(destinationRoot, entry.info.path, overwriteCallback, replaceAll);
             winzox::io::WriteFileBytes(outputPath, plain);
             completedUnits += entry.info.originalSize > 0 ? entry.info.originalSize : 1;
             ReportProgress(progressCallback, completedUnits, totalUnits, entry.info.path, "Extracting");
@@ -318,7 +371,7 @@ void ExtractArchive(const std::string& filename,
         throw std::runtime_error("Passwords are only supported for .zox archives in this version");
     }
 
-    ExtractGenericArchive(filename, destination, progressCallback);
+    ExtractGenericArchive(filename, destination, progressCallback, overwriteCallback);
 }
 
 std::vector<winzox::archive::ArchiveEntryInfo> ListArchiveEntries(const std::string& filename,
