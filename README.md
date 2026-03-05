@@ -8,17 +8,29 @@
 
 ## Why WinZOX
 - **C++ performance**: predictable speed + easier native integration.
-- **Modular design**: add codecs/formats without turning the codebase into spaghetti.
-- **Practical UX**: progress, speed, ETA, cancel but without the drama.
+- **Modular architecture** to keep compression, archive, extraction, and crypto layers clean.
+- **Practical UX** with progress reporting, speed/ETA, and shell integration on Windows.
 
 ---
 
 ## Features
-### Current / In Progress
-- Archive **create / extract** workflow (CLI)
-- **Progress reporting** (total + per-file), speed, ETA
-- **Compression presets** (fast/normal/maximum/ultra)
-- Solid foundation for multi-format support (see Roadmap)
+### Current
+
+- Create / extract archives via CLI
+
+- `.zox` create + extract
+
+- `.zip` create + extract
+
+- `.7z` / `.rar` extract support
+
+- Compression presets (Fast / Normal / Maximum / Ultra)
+
+- Per-operation progress reporting (where supported)
+
+- Encryption options: **AES-256** and **Gorgon**
+
+- Archive integrity checks (including hash-based verification)
 
 ### Planned
 - Multi-format support (ZIP / 7Z / RAR extract, etc.)
@@ -26,40 +38,46 @@
 - Archive integrity + metadata
 - GUI frontend (optional)
 
-> If a feature is missing, assume it’s **planned** rather than “broken”.
-
 ---
 
 ## Supported Formats
 | Format | Create | Extract | Notes |
-|---|---:|---:|---|
-| `.zip` |Yes  |Yes | Standard |
-| `.7z`  | —  | Yes | Extract-only |
-| `.rar` | —  | Yes | Extract-only |
-| `.zox` | Yes | Yes | Native |
 
-> .zox is WinZOX native format.
+|---|---:|---:|---|
+
+| `.zox` | Yes | Yes | WinZOX native format |
+
+| `.zip` | Yes | Yes | Standard ZIP workflow |
+
+| `.7z` | No | Yes | Extract-only |
+
+| `.rar` | No | Yes | Extract-only |
+
+> `.zox` is WinZOX native format.
 ---
 
-## Compression Presets (zstd example)
+## Compression Presets (zstd defaults)
 These are **recommended defaults** for a modern archiver:
 
 | Preset | zstd level | Goal |
-|---|---:|---|
-| Fast | 5 | very fast, decent ratio |
-| Normal | 8 | best general-purpose balance |
-| Maximum | 15 | smaller archives, slower |
-| Ultra | 20 | extreme compression, much slower |
 
-> Notes:
-> - For tiny files, overhead can dominate; don’t expect miracles.
+|---|---:|---|
+
+| Fast | 5 | very fast, decent ratio |
+
+| Normal | 8 | balanced default |
+
+| Maximum | 15 | smaller archive, slower |
+
+| Ultra | 20 | strongest compression, much slower |
 
 ---
 
 ## Build
 ### Requirements
-- C++ compiler with C++17+ support
-- CMake (recommended)
+- C++17-compatible compiler
+- CMake 3.10+
+- Required libraries installed in your environment (for example: OpenSSL, zlib, zstd, libarchive)
 
 ### Build (CMake)
 ```bash
