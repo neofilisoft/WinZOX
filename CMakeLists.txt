@@ -1,9 +1,24 @@
 cmake_minimum_required(VERSION 3.10)
-project(ZipBox VERSION 1.0 LANGUAGES CXX)
+set(WINZOX_VERSION_STRING "2.11.1")
+project(WinZOX VERSION ${WINZOX_VERSION_STRING} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(WINZOX_SRC_DIR src)
+set(WINZOX_EXTENSIONS_DIR extensions)
+set(WINZOX_ARCHIVE_DIR ${WINZOX_SRC_DIR}/archive)
+set(WINZOX_COMPRESSION_DIR ${WINZOX_SRC_DIR}/compression)
+set(WINZOX_COMPRESSION_CODER_DIR ${WINZOX_COMPRESSION_DIR}/coder)
+set(WINZOX_COMPRESSION_DICTIONARY_DIR ${WINZOX_COMPRESSION_DIR}/dictionary)
+set(WINZOX_CRYPTO_DIR ${WINZOX_SRC_DIR}/crypto)
+set(WINZOX_CRYPTO_ALGORITHMS_DIR ${WINZOX_CRYPTO_DIR}/algorithms)
+set(WINZOX_CRYPTO_PROVIDERS_DIR ${WINZOX_CRYPTO_ALGORITHMS_DIR}/provider)
+set(WINZOX_EXTRACTION_DIR ${WINZOX_SRC_DIR}/extraction)
+set(WINZOX_EXTRACTION_DECODER_DIR ${WINZOX_EXTRACTION_DIR}/decoder)
+set(WINZOX_IO_DIR ${WINZOX_SRC_DIR}/io)
+set(WINZOX_UTILS_DIR ${WINZOX_SRC_DIR}/utils)
 
 if (WIN32)
     set(MSYS2_UCRT64_ROOT "C:/msys64/ucrt64")
@@ -31,6 +46,22 @@ find_library(NETTLE_LIBRARY NAMES nettle libnettle
     PATHS
         "${MSYS2_UCRT64_ROOT}/lib"
 )
+find_path(LZ4_INCLUDE_DIR lz4.h
+    PATHS
+        "${MSYS2_UCRT64_ROOT}/include"
+)
+find_library(LZ4_LIBRARY NAMES lz4 liblz4
+    PATHS
+        "${MSYS2_UCRT64_ROOT}/lib"
+)
+find_path(LZMA_INCLUDE_DIR lzma.h
+    PATHS
+        "${MSYS2_UCRT64_ROOT}/include"
+)
+find_library(LZMA_LIBRARY NAMES lzma liblzma
+    PATHS
+        "${MSYS2_UCRT64_ROOT}/lib"
+)
 
 if (NOT ZSTD_INCLUDE_DIR OR NOT ZSTD_LIBRARY)
     message(FATAL_ERROR "Could not find Zstd. Install the Zstd development package or set ZSTD_INCLUDE_DIR/ZSTD_LIBRARY.")
@@ -39,63 +70,199 @@ endif()
 if (NOT NETTLE_LIBRARY)
     message(FATAL_ERROR "Could not find Nettle. Install the Nettle development package or set NETTLE_LIBRARY.")
 endif()
+if (NOT LZ4_INCLUDE_DIR OR NOT LZ4_LIBRARY)
+    message(FATAL_ERROR "Could not find LZ4. Install the LZ4 development package or set LZ4_INCLUDE_DIR/LZ4_LIBRARY.")
+endif()
+if (NOT LZMA_INCLUDE_DIR OR NOT LZMA_LIBRARY)
+    message(FATAL_ERROR "Could not find LZMA. Install the XZ/LZMA development package or set LZMA_INCLUDE_DIR/LZMA_LIBRARY.")
+endif()
 
 set(SOURCES
-    src/app/main.cpp
-    src/archive/archive.cpp
-    src/compression/compressor.cpp
-    src/crypto/aes256.cpp
-    src/crypto/gorgon.cpp
-    src/crypto/key_derivation.cpp
-    src/extraction/extractor.cpp
-    src/io/file_reader.cpp
-    src/io/file_writer.cpp
-    src/shell/windows_shell.cpp
-    src/shell/windows_shell_add_dialog.cpp
-    src/shell/windows_shell_browse_dialog.cpp
-    src/io/volume_reader.cpp
-    src/io/volume_writer.cpp
-    src/utils/checksum.cpp
-    src/utils/path_utils.cpp
+    ${WINZOX_SRC_DIR}/app/main.cpp
+    ${WINZOX_ARCHIVE_DIR}/archive.cpp
+    ${WINZOX_ARCHIVE_DIR}/archive_integrity.cpp
+    ${WINZOX_COMPRESSION_DIR}/compressor.cpp
+    ${WINZOX_COMPRESSION_CODER_DIR}/huffman.cpp
+    ${WINZOX_COMPRESSION_CODER_DIR}/range_coder.cpp
+    ${WINZOX_COMPRESSION_DICTIONARY_DIR}/dictionary_manager.cpp
+    ${WINZOX_CRYPTO_ALGORITHMS_DIR}/aes/aes256.cpp
+    ${WINZOX_CRYPTO_PROVIDERS_DIR}/aes_provider.cpp
+    ${WINZOX_CRYPTO_DIR}/auth/archive_authentication.cpp
+    ${WINZOX_CRYPTO_PROVIDERS_DIR}/gorgon_provider.cpp
+    ${WINZOX_CRYPTO_ALGORITHMS_DIR}/gorgon/gorgon.cpp
+    ${WINZOX_CRYPTO_DIR}/key_derivation.cpp
+    ${WINZOX_EXTRACTION_DIR}/extractor.cpp
+    ${WINZOX_EXTRACTION_DECODER_DIR}/decode_pipeline.cpp
+    ${WINZOX_EXTRACTION_DIR}/api/unzox/unzox_api.cpp
+    ${WINZOX_IO_DIR}/file_reader.cpp
+    ${WINZOX_IO_DIR}/file_writer.cpp
+    ${WINZOX_SRC_DIR}/shell/windows_shell.cpp
+    ${WINZOX_SRC_DIR}/shell/windows_shell_add_dialog.cpp
+    ${WINZOX_SRC_DIR}/shell/windows_shell_browse_dialog.cpp
+    ${WINZOX_IO_DIR}/volume_reader.cpp
+    ${WINZOX_IO_DIR}/volume_writer.cpp
+    ${WINZOX_UTILS_DIR}/checksum.cpp
+    ${WINZOX_UTILS_DIR}/path_utils.cpp
+)
+
+set(GORGON_LIBRARY_SOURCES
+    ${WINZOX_CRYPTO_ALGORITHMS_DIR}/gorgon/gorgon_api.cpp
+    ${WINZOX_CRYPTO_PROVIDERS_DIR}/gorgon_provider.cpp
+    ${WINZOX_CRYPTO_ALGORITHMS_DIR}/gorgon/gorgon.cpp
+    ${WINZOX_CRYPTO_DIR}/key_derivation.cpp
+)
+
+set(UNZOX_LIBRARY_SOURCES
+    ${WINZOX_ARCHIVE_DIR}/archive.cpp
+    ${WINZOX_ARCHIVE_DIR}/archive_integrity.cpp
+    ${WINZOX_COMPRESSION_DIR}/compressor.cpp
+    ${WINZOX_COMPRESSION_CODER_DIR}/huffman.cpp
+    ${WINZOX_COMPRESSION_CODER_DIR}/range_coder.cpp
+    ${WINZOX_COMPRESSION_DICTIONARY_DIR}/dictionary_manager.cpp
+    ${WINZOX_CRYPTO_ALGORITHMS_DIR}/aes/aes256.cpp
+    ${WINZOX_CRYPTO_PROVIDERS_DIR}/aes_provider.cpp
+    ${WINZOX_CRYPTO_DIR}/auth/archive_authentication.cpp
+    ${WINZOX_CRYPTO_PROVIDERS_DIR}/gorgon_provider.cpp
+    ${WINZOX_CRYPTO_ALGORITHMS_DIR}/gorgon/gorgon.cpp
+    ${WINZOX_CRYPTO_DIR}/key_derivation.cpp
+    ${WINZOX_EXTRACTION_DIR}/extractor.cpp
+    ${WINZOX_EXTRACTION_DECODER_DIR}/decode_pipeline.cpp
+    ${WINZOX_EXTRACTION_DIR}/api/unzox/unzox_api.cpp
+    ${WINZOX_EXTRACTION_DIR}/api/unzox/unzox_c_api.cpp
+    ${WINZOX_IO_DIR}/file_reader.cpp
+    ${WINZOX_IO_DIR}/file_writer.cpp
+    ${WINZOX_IO_DIR}/volume_reader.cpp
+    ${WINZOX_IO_DIR}/volume_writer.cpp
+    ${WINZOX_UTILS_DIR}/checksum.cpp
+    ${WINZOX_UTILS_DIR}/path_utils.cpp
 )
 
 if (WIN32)
-    add_executable(zipbox WIN32 ${SOURCES})
+    add_executable(winzox WIN32 ${SOURCES})
 else()
-    add_executable(zipbox ${SOURCES})
+    add_executable(winzox ${SOURCES})
+endif()
+set_target_properties(winzox PROPERTIES OUTPUT_NAME "zox")
+
+add_library(winzox_gorgon SHARED ${GORGON_LIBRARY_SOURCES})
+target_compile_definitions(winzox_gorgon PRIVATE
+    WINZOX_GORGON_BUILD_SHARED
+    WINZOX_GORGON_API_VERSION="${WINZOX_VERSION_STRING}"
+)
+target_include_directories(winzox_gorgon PUBLIC
+    src
+    ${OPENSSL_INCLUDE_DIR}
+)
+target_link_libraries(winzox_gorgon PRIVATE
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    ${NETTLE_LIBRARY}
+)
+if (WIN32)
+    set_target_properties(winzox_gorgon PROPERTIES PREFIX "")
 endif()
 
-target_include_directories(zipbox PRIVATE
+add_library(winzox_unzox SHARED ${UNZOX_LIBRARY_SOURCES})
+target_compile_definitions(winzox_unzox PRIVATE
+    WINZOX_UNZOX_BUILD_SHARED
+    WINZOX_UNZOX_API_VERSION="${WINZOX_VERSION_STRING}"
+)
+target_include_directories(winzox_unzox PUBLIC
     src
     ${OPENSSL_INCLUDE_DIR}
     ${ZLIB_INCLUDE_DIRS}
     ${LibArchive_INCLUDE_DIRS}
     ${ZSTD_INCLUDE_DIR}
+    ${LZ4_INCLUDE_DIR}
+    ${LZMA_INCLUDE_DIR}
 )
-
-target_link_libraries(zipbox PRIVATE
+target_link_libraries(winzox_unzox PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
     ZLIB::ZLIB
     ${LibArchive_LIBRARIES}
     ${ZSTD_LIBRARY}
     ${NETTLE_LIBRARY}
+    ${LZ4_LIBRARY}
+    ${LZMA_LIBRARY}
+)
+if (WIN32)
+    set_target_properties(winzox_unzox PROPERTIES PREFIX "" OUTPUT_NAME "UnZOX")
+else()
+    set_target_properties(winzox_unzox PROPERTIES OUTPUT_NAME "UnZOX")
+endif()
+
+target_include_directories(winzox PRIVATE
+    src
+    ${OPENSSL_INCLUDE_DIR}
+    ${ZLIB_INCLUDE_DIRS}
+    ${LibArchive_INCLUDE_DIRS}
+    ${ZSTD_INCLUDE_DIR}
+    ${LZ4_INCLUDE_DIR}
+    ${LZMA_INCLUDE_DIR}
+)
+
+target_link_libraries(winzox PRIVATE
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    ZLIB::ZLIB
+    ${LibArchive_LIBRARIES}
+    ${ZSTD_LIBRARY}
+    ${NETTLE_LIBRARY}
+    ${LZ4_LIBRARY}
+    ${LZMA_LIBRARY}
 )
 
 if (WIN32)
-    target_link_libraries(zipbox PRIVATE comdlg32 shell32 user32 ole32 uuid)
+    target_link_libraries(winzox PRIVATE comdlg32 comctl32 shell32 user32 ole32 uuid)
     add_custom_command(
-        TARGET zipbox POST_BUILD
+        TARGET winzox POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/windows/zipbox.manifest"
-            "$<TARGET_FILE_DIR:zipbox>/zipbox.exe.manifest"
+            "${CMAKE_CURRENT_SOURCE_DIR}/windows/winzox.manifest"
+            "$<TARGET_FILE_DIR:winzox>/zox.exe.manifest"
     )
 endif()
 
-install(TARGETS zipbox RUNTIME DESTINATION bin)
+install(TARGETS winzox
+        RUNTIME DESTINATION bin)
+install(TARGETS winzox_gorgon
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib)
+install(TARGETS winzox_unzox
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib)
+install(FILES
+    ${WINZOX_CRYPTO_ALGORITHMS_DIR}/gorgon/gorgon_api.h
+    DESTINATION include/crypto
+)
+install(FILES
+    ${WINZOX_EXTRACTION_DIR}/api/unzox/unzox_api.hpp
+    DESTINATION include/extraction/api/unzox
+)
+install(FILES
+    ${WINZOX_EXTRACTION_DIR}/api/unzox/unzox_c_api.h
+    DESTINATION include/extraction/api/unzox
+)
 install(FILES
     windows/install-shell-integration.ps1
     windows/shell-dispatch.ps1
     windows/uninstall-shell-integration.ps1
     DESTINATION tools
 )
+
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${WINZOX_EXTENSIONS_DIR}")
+    file(GLOB WINZOX_EXTENSION_CMAKE_FILES
+        RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${WINZOX_EXTENSIONS_DIR}/*/CMakeLists.txt"
+    )
+
+    foreach(extension_cmake IN LISTS WINZOX_EXTENSION_CMAKE_FILES)
+        get_filename_component(extension_dir "${extension_cmake}" DIRECTORY)
+        add_subdirectory(
+            "${CMAKE_CURRENT_SOURCE_DIR}/${extension_dir}"
+            "${CMAKE_CURRENT_BINARY_DIR}/${extension_dir}"
+        )
+    endforeach()
+endif()
