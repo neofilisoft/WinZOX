@@ -67,6 +67,7 @@ __pycache__/
 !archive.cpp
 !aes256.cpp
 !extractor.cpp
+*.yml
 
 # Config
 .env
