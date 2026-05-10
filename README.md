@@ -76,3 +76,18 @@ git clone https://github.com/neofilisoft/WinZOX.git
 cd WinZOX
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
+
+For Windows Users
+- If the installed build includes the GUI, .zox files can be opened directly with WinZOX.exe.
+- The installer creates shortcuts for WinZOX GUI and WinZOX Console.
+- Right-click integration still uses the CLI for extraction commands.
+Important Files Changed from v2.12.0
+- Added the `src/gui/` folder.
+- Added `BUILD.md` and `AUDIT.md`.
+- Updated `CMakeLists.txt` for version 3.0.0 and the optional GUI target.
+- Updated `src/app/main.cpp` for the new default encryption mode and safer password input.
+- Updated `src/archive/archive.cpp` for mandatory authentication and archive-bomb caps.
+- Updated crypto providers for AES-GCM, ChaCha20-Poly1305, and Gorgon-AEAD.
+- Updated `src/compression/coder/range_coder.cpp` and `src/compression/compressor.cpp`.
+- Updated `src/extraction/extractor.cpp` and `src/io/file_reader.cpp` for path/symlink hardening.
+- Updated `windows/WinZOX.iss` for the v3.0.0 installer and GUI packaging.
