@@ -74,6 +74,7 @@ __pycache__/
 .env.*
 secrets.*
 private.*
+*.ps1
 
 # CMake
 *.cmake
