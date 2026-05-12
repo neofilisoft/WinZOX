@@ -176,7 +176,7 @@ void MainWindow::BuildStatusBar() {
 }
 
 void MainWindow::RefreshTitle() {
-    QString base = tr("WinZOX 3.0.0");
+    QString base = tr("WinZOX 3.1.0");
     if (!archivePath_.isEmpty()) {
         base = QFileInfo(archivePath_).fileName() + QLatin1String(" — ") + base;
     }
@@ -475,7 +475,7 @@ void MainWindow::OnToggleTheme() {
 
 void MainWindow::OnAbout() {
     QMessageBox::about(this, tr("About WinZOX"),
-        tr("<h3>WinZOX 3.0.0</h3>"
+        tr("<h3>WinZOX 3.1.0</h3>"
            "<p>Modern archiver with Gorgon-AEAD cascade encryption "
            "(ChaCha20-Poly1305 over AES-256-GCM) and Fluent-style desktop UI.</p>"
            "<p>Build: %1 (Qt %2)</p>")
