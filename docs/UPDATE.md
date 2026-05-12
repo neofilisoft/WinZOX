@@ -1,4 +1,4 @@
-# WinZOX 3.1.0 & UnZOX SDK 2.0.0 — Update Notes
+# WinZOX 3.1.0 & UnZOX SDK 2.0.0 - Update Notes
 
 This release upgrades the C++ baseline to **C++20**, ports two safety-critical
 modules to **Rust 1.95**, hardens the UnZOX SDK, and ships a new safe Rust
@@ -12,7 +12,7 @@ vice versa.
 
 Both projects move from C++17 to **C++20**.
 
-| project           | old standard | new standard | minimum compilers                                    |
+| Project           | Old standard | New standard | Minimum compilers                                    |
 |-------------------|--------------|--------------|------------------------------------------------------|
 | WinZOX            | C++17        | C++20        | GCC ≥ 11 / Clang ≥ 13 / MSVC ≥ 19.30 (VS 2022 17.0)  |
 | UnZOX SDK         | C++17        | C++20        | same                                                 |
