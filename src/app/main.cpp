@@ -1,4 +1,4 @@
-﻿#include "archive/archive.hpp"
+#include "archive/archive.hpp"
 #include "compression/compressor.hpp"
 #include "extraction/extractor.hpp"
 #include "shell/windows_shell.hpp"
@@ -449,7 +449,7 @@ std::string ResolvePassword(const std::string& spec, bool sensitiveContext) {
 }
 
 void PrintUsage() {
-    std::cout << "WinZOX v3.0.0 - Modular Archiver\n";
+    std::cout << "WinZOX v3.1.0 - Modular Archiver\n";
     std::cout << "Usage:\n";
     std::cout << "  zox add <input_path> <output_base> [options]\n";
     std::cout << "  zox extract <archive_file> <output_folder> [-p password]\n";
