@@ -1,10 +1,20 @@
-﻿cmake_minimum_required(VERSION 3.10)
-set(WINZOX_VERSION_STRING "3.0.0")
+cmake_minimum_required(VERSION 3.20)
+set(WINZOX_VERSION_STRING "3.1.0")
 project(WinZOX VERSION ${WINZOX_VERSION_STRING} LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+# WinZOX 3.1.0 baseline is C++20. We rely on:
+#   * std::span / std::endian / std::bit_cast / std::byteswap (binary parser)
+#   * <bit> and constexpr improvements (compression coders)
+#   * Designated initializers for the GUI/I-O structs
+# Compilers required: GCC >= 11, Clang >= 13, MSVC >= 19.30 (Visual Studio 2022 17.0).
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Optional Rust components introduced in 3.1.0. When enabled, parts of
+# src/io and src/archive are linked from the `winzox-io-rs` and
+# `winzox-archive-read` static libraries built by Cargo.
+option(WINZOX_ENABLE_RUST_COMPONENTS "Link Rust 1.95 reimplementations of io and archive-read" OFF)
 
 set(WINZOX_SRC_DIR src)
 set(WINZOX_EXTENSIONS_DIR extensions)
@@ -217,6 +227,98 @@ target_link_libraries(winzox PRIVATE
     ${LZ4_LIBRARY}
     ${LZMA_LIBRARY}
 )
+
+# -----------------------------------------------------------------------------
+# Rust 1.95 components (winzox-io-rs, winzox-archive-read).
+# -----------------------------------------------------------------------------
+#
+# When `WINZOX_ENABLE_RUST_COMPONENTS=ON`, we build the workspace under
+# `${WINZOX_RUST_WORKSPACE_DIR}` (default: `../rust-crates` relative to this
+# project) and link the resulting static libraries into both the `winzox` CLI
+# and the `winzox_unzox` shared library. The C++ implementation files in
+# `src/io` and `src/archive` detect the Rust path at compile time via the
+# `WINZOX_USE_RUST_IO` and `WINZOX_USE_RUST_ARCHIVE_READ` macros and
+# delegate to the Rust C ABI; otherwise they keep their plain C++ behaviour.
+if (WINZOX_ENABLE_RUST_COMPONENTS)
+    if (NOT DEFINED WINZOX_RUST_WORKSPACE_DIR)
+        set(WINZOX_RUST_WORKSPACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../rust-crates" CACHE PATH
+            "Path to the WinZOX/UnZOX Rust workspace")
+    endif()
+
+    find_program(CARGO_EXECUTABLE cargo
+        HINTS "$ENV{HOME}/.cargo/bin")
+    if (NOT CARGO_EXECUTABLE)
+        message(FATAL_ERROR
+            "WINZOX_ENABLE_RUST_COMPONENTS is ON but no `cargo` binary was found. "
+            "Install Rust 1.95 from https://rustup.rs or set CARGO_EXECUTABLE.")
+    endif()
+
+    set(WINZOX_RUST_TARGET_DIR "${CMAKE_BINARY_DIR}/rust-target")
+    set(WINZOX_RUST_OUT_DIR "${WINZOX_RUST_TARGET_DIR}/release")
+    set(WINZOX_IO_RS_STATIC "${WINZOX_RUST_OUT_DIR}/libwinzox_io_rs.a")
+    set(WINZOX_AR_RS_STATIC "${WINZOX_RUST_OUT_DIR}/libwinzox_archive_read.a")
+    if (WIN32)
+        set(WINZOX_IO_RS_STATIC "${WINZOX_RUST_OUT_DIR}/winzox_io_rs.lib")
+        set(WINZOX_AR_RS_STATIC "${WINZOX_RUST_OUT_DIR}/winzox_archive_read.lib")
+    endif()
+
+    add_custom_command(
+        OUTPUT  ${WINZOX_IO_RS_STATIC} ${WINZOX_AR_RS_STATIC}
+        COMMAND ${CARGO_EXECUTABLE} build --release
+                    --manifest-path "${WINZOX_RUST_WORKSPACE_DIR}/Cargo.toml"
+                    --target-dir "${WINZOX_RUST_TARGET_DIR}"
+                    -p winzox-io-rs -p winzox-archive-read
+        WORKING_DIRECTORY ${WINZOX_RUST_WORKSPACE_DIR}
+        COMMENT "Building Rust 1.95 static libraries (winzox-io-rs, winzox-archive-read)"
+    )
+    add_custom_target(winzox_rust_libs ALL
+        DEPENDS ${WINZOX_IO_RS_STATIC} ${WINZOX_AR_RS_STATIC})
+
+    add_library(winzox_rust_io STATIC IMPORTED GLOBAL)
+    set_target_properties(winzox_rust_io PROPERTIES
+        IMPORTED_LOCATION ${WINZOX_IO_RS_STATIC})
+    add_dependencies(winzox_rust_io winzox_rust_libs)
+
+    add_library(winzox_rust_archive_read STATIC IMPORTED GLOBAL)
+    set_target_properties(winzox_rust_archive_read PROPERTIES
+        IMPORTED_LOCATION ${WINZOX_AR_RS_STATIC})
+    add_dependencies(winzox_rust_archive_read winzox_rust_libs)
+
+    target_include_directories(winzox PRIVATE
+        ${WINZOX_RUST_WORKSPACE_DIR}/winzox-io-rs/include
+        ${WINZOX_RUST_WORKSPACE_DIR}/winzox-archive-read/include
+    )
+    target_link_libraries(winzox PRIVATE
+        winzox_rust_io
+        winzox_rust_archive_read
+    )
+    target_compile_definitions(winzox PRIVATE
+        WINZOX_USE_RUST_IO=1
+        WINZOX_USE_RUST_ARCHIVE_READ=1
+    )
+
+    target_include_directories(winzox_unzox PRIVATE
+        ${WINZOX_RUST_WORKSPACE_DIR}/winzox-io-rs/include
+        ${WINZOX_RUST_WORKSPACE_DIR}/winzox-archive-read/include
+    )
+    target_link_libraries(winzox_unzox PRIVATE
+        winzox_rust_io
+        winzox_rust_archive_read
+    )
+    target_compile_definitions(winzox_unzox PRIVATE
+        WINZOX_USE_RUST_IO=1
+        WINZOX_USE_RUST_ARCHIVE_READ=1
+    )
+
+    if (UNIX AND NOT APPLE)
+        # Rust static libs pull in pthread, dl, and rt on Linux.
+        target_link_libraries(winzox PRIVATE pthread dl rt)
+        target_link_libraries(winzox_unzox PRIVATE pthread dl rt)
+    elseif (WIN32)
+        target_link_libraries(winzox PRIVATE userenv ws2_32 bcrypt ntdll)
+        target_link_libraries(winzox_unzox PRIVATE userenv ws2_32 bcrypt ntdll)
+    endif()
+endif()
 
 if (WIN32)
     target_link_libraries(winzox PRIVATE comdlg32 comctl32 shell32 user32 ole32 uuid)
