@@ -2,11 +2,6 @@ cmake_minimum_required(VERSION 3.20)
 set(WINZOX_VERSION_STRING "3.1.0")
 project(WinZOX VERSION ${WINZOX_VERSION_STRING} LANGUAGES CXX)
 
-# WinZOX 3.1.0 baseline is C++20. We rely on:
-#   * std::span / std::endian / std::bit_cast / std::byteswap (binary parser)
-#   * <bit> and constexpr improvements (compression coders)
-#   * Designated initializers for the GUI/I-O structs
-# Compilers required: GCC >= 11, Clang >= 13, MSVC >= 19.30 (Visual Studio 2022 17.0).
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
