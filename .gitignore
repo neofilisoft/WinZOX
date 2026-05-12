@@ -65,10 +65,12 @@ __pycache__/
 
 # Ignore
 *.cpp
+*.rs
 !main.cpp
 !archive.cpp
 !aes256.cpp
 !extractor.cpp
+*.yoml
 *.yml
 
 # Config
