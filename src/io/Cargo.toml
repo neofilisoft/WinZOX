@@ -1,0 +1,23 @@
+[package]
+name = "winzox-io-rs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Rust 1.95 reimplementation of WinZOX/src/io with hardened size caps and symlink protections. Drop-in C ABI replacement for the C++ io module."
+
+[lib]
+name = "winzox_io_rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = "0.2"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
