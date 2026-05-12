@@ -63,14 +63,14 @@ int main(int argc, char* argv[]) {
     QApplication::setOrganizationName("Neofilisoft");
     QApplication::setOrganizationDomain("neofilisoft.com");
     QApplication::setApplicationName("WinZOX");
-    QApplication::setApplicationVersion("3.0.0");
+    QApplication::setApplicationVersion("3.1.0");
 
     QApplication app(argc, argv);
     app.setStyle(QStyleFactory::create("Fusion"));
     app.setStyleSheet(QString::fromLatin1(kFluentStylesheet));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("WinZOX 3.0.0 archiver"));
+    parser.setApplicationDescription(QStringLiteral("WinZOX 3.1.0 archiver"));
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QStringLiteral("archive"),
