@@ -81,6 +81,7 @@ private.*
 # CMake
 *.cmake
 *CMakeCache.txt
+*CMakeLists.txt
 
 # Algorithm
 gorgon.*
