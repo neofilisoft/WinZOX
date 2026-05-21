@@ -27,9 +27,11 @@
 #include <termios.h>
 #include <unistd.h>
 #endif
+
 #include <filesystem>
 
 namespace {
+
 // ---------------------------------------------------------------------------
 // Optional repair kit (extension shipped as WinZOXRepairKit.dll / libWinZOXRepairKit.so).
 // We load the C ABI dynamically so the CLI works fine when the extension is absent.
