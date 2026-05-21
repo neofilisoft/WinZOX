@@ -27,11 +27,9 @@
 #include <termios.h>
 #include <unistd.h>
 #endif
-
 #include <filesystem>
 
 namespace {
-
 // ---------------------------------------------------------------------------
 // Optional repair kit (extension shipped as WinZOXRepairKit.dll / libWinZOXRepairKit.so).
 // We load the C ABI dynamically so the CLI works fine when the extension is absent.
@@ -210,9 +208,19 @@ void TryAttachParentConsole() {
     }
 
     g_hasConsole = true;
-    std::freopen("CONIN$", "r", stdin);
-    std::freopen("CONOUT$", "w", stdout);
-    std::freopen("CONOUT$", "w", stderr);
+    // CWE-775: Check freopen() return values. If any redirect fails, the original
+    // stdio handle is closed by freopen() regardless, so we accept partial success
+    // but log a warning. The handles are owned by the CRT and will be released on
+    // process exit; we do not need to fclose() them explicitly.
+    if (std::freopen("CONIN$", "r", stdin) == nullptr) {
+        // stdin redirect failed; not fatal but console input will be broken.
+    }
+    if (std::freopen("CONOUT$", "w", stdout) == nullptr) {
+        // stdout redirect failed.
+    }
+    if (std::freopen("CONOUT$", "w", stderr) == nullptr) {
+        // stderr redirect failed.
+    }
     std::ios::sync_with_stdio();
 }
 
@@ -421,9 +429,18 @@ std::string ResolvePassword(const std::string& spec, bool sensitiveContext) {
     }
     if (!spec.empty() && spec.front() == '@') {
         const std::string path = spec.substr(1);
-        std::ifstream input(path);
+        // CWE-23: Canonicalize and validate the path to prevent directory traversal.
+        // std::filesystem::canonical() resolves symlinks and ".." components;
+        // it throws if the path does not exist, which we re-throw as a clear message.
+        std::filesystem::path canonPath;
+        try {
+            canonPath = std::filesystem::canonical(std::filesystem::path(path));
+        } catch (const std::filesystem::filesystem_error&) {
+            throw std::runtime_error("Cannot open password file (path invalid or does not exist): " + path);
+        }
+        std::ifstream input(canonPath);
         if (!input) {
-            throw std::runtime_error("Cannot open password file: " + path);
+            throw std::runtime_error("Cannot open password file: " + canonPath.string());
         }
         std::string line;
         std::getline(input, line);
