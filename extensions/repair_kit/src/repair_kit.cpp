@@ -3,7 +3,6 @@
 #include "archive/archive_integrity.hpp"
 #include "io/volume_reader.hpp"
 #include "utils/checksum.hpp"
-#include "utils/path_utils.hpp"
 
 #include <algorithm>
 #include <array>
@@ -516,7 +515,7 @@ WinZOXRepairKitStatus AnalyzeArchive(const fs::path& path,
     }
 
     report->file_size = fs::is_regular_file(path) ? static_cast<uint64_t>(fs::file_size(path)) : 0;
-    const std::string extension = winzox::utils::PathToUtf8(path.extension());
+    const std::string extension = path.extension().u8string();
     report->is_split_volume = EndsWithSplitExtension(extension) ? 1 : 0;
     report->is_probably_truncated = raw.size() < 32 ? 1 : 0;
 
