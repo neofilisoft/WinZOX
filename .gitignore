@@ -85,5 +85,8 @@ private.*
 *CMakeCache.txt
 *CMakeLists.txt
 
-# Algorithm
-gorgon.*
+# Other
+*.ico
+*.iss
+*.ps1
+
