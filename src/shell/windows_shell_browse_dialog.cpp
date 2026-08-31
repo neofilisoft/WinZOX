@@ -111,7 +111,7 @@ void ExecuteBrowseExtractToFolder(BrowseDialogState& state, HWND window) {
         };
     winzox::extraction::ExtractArchive(
         state.archivePath,
-        winzox::utils::PathToUtf8(fs::path(selectedFolder)),
+        fs::path(selectedFolder).u8string(),
         state.password,
         progressCallback,
         overwriteCallback);
@@ -209,7 +209,7 @@ LRESULT CALLBACK PasswordPromptProc(HWND window, UINT message, WPARAM wParam, LP
         state->font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 
         const std::wstring prompt = L"Enter the password for " +
-            Utf8ToWide(winzox::utils::PathToUtf8(fs::path(state->archivePath).filename()));
+            Utf8ToWide(fs::path(state->archivePath).filename().u8string());
         HWND label = CreateWindowExW(
             0, L"STATIC", prompt.c_str(),
             WS_CHILD | WS_VISIBLE,
@@ -348,7 +348,7 @@ LRESULT CALLBACK BrowseDialogProc(HWND window, UINT message, WPARAM wParam, LPAR
         CreateBrowseMenu(window);
 
         HWND infoLabel = CreateWindowExW(
-            0, L"STATIC", Utf8ToWide(winzox::utils::PathToUtf8(fs::path(state->archivePath).filename())).c_str(),
+            0, L"STATIC", Utf8ToWide(fs::path(state->archivePath).filename().u8string()).c_str(),
             WS_CHILD | WS_VISIBLE,
             12, 12, 636, 20,
             window, nullptr, nullptr, nullptr);
@@ -614,7 +614,7 @@ void ShowBrowseDialog(const std::string& archivePath) {
     HWND window = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
         className,
-        Utf8ToWide("WinZOX - " + winzox::utils::PathToUtf8(fs::path(archivePath).filename())).c_str(),
+        Utf8ToWide("WinZOX - " + fs::path(archivePath).filename().u8string()).c_str(),
         WS_CAPTION | WS_SYSMENU | WS_POPUP | WS_VISIBLE,
         CW_USEDEFAULT, CW_USEDEFAULT, 670, 390,
         nullptr, nullptr, GetModuleHandleW(nullptr), &state);

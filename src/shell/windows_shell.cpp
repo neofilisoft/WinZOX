@@ -213,7 +213,7 @@ winzox::extraction::OverwriteDecision PromptForOverwriteDecision(HWND owner,
     case 1001:
         return { winzox::extraction::OverwriteAction::Replace, {} };
     case 1002:
-        return { winzox::extraction::OverwriteAction::Rename, winzox::utils::PathToUtf8(BuildAutoRenamePath(existingPath)) };
+        return { winzox::extraction::OverwriteAction::Rename, BuildAutoRenamePath(existingPath).u8string() };
     case 1003:
         return { winzox::extraction::OverwriteAction::ReplaceAll, {} };
     default:
@@ -241,10 +241,10 @@ std::vector<fs::path> NormalizeTargets(const std::vector<std::string>& targetPat
 
 std::string DefaultZoxBasePath(const fs::path& targetPath) {
     if (fs::is_directory(targetPath)) {
-        return winzox::utils::PathToUtf8(targetPath);
+        return targetPath.u8string();
     }
 
-    return winzox::utils::PathToUtf8(targetPath.parent_path() / targetPath.stem());
+    return (targetPath.parent_path() / targetPath.stem()).u8string();
 }
 
 std::string DefaultZoxBasePath(const std::vector<fs::path>& targets) {
@@ -252,11 +252,11 @@ std::string DefaultZoxBasePath(const std::vector<fs::path>& targets) {
         return DefaultZoxBasePath(targets.front());
     }
 
-    return winzox::utils::PathToUtf8(CommonSelectionParent(targets) / "Archive");
+    return (CommonSelectionParent(targets) / "Archive").u8string();
 }
 
 std::string DefaultExtractDestination(const fs::path& targetPath) {
-    return winzox::utils::PathToUtf8(targetPath.parent_path() / targetPath.stem());
+    return (targetPath.parent_path() / targetPath.stem()).u8string();
 }
 
 void ExecuteShellExtraction(const std::string& archivePath,
@@ -305,16 +305,16 @@ bool RunShellAddDialog(const std::vector<std::string>& targetPaths) {
     };
 
     if (dialogResult.format == internal::ShellArchiveFormat::Zip) {
-        winzox::archive::CreateZipArchive(targetPaths, winzox::utils::PathToUtf8(internal::fs::path(dialogResult.outputPath)), config, progressCallback);
+        winzox::archive::CreateZipArchive(targetPaths, internal::fs::path(dialogResult.outputPath).u8string(), config, progressCallback);
     } else {
         winzox::archive::CreateArchive(
             targetPaths,
             [&]() {
                 internal::fs::path outputPath(dialogResult.outputPath);
-                if (winzox::utils::ToLower(winzox::utils::PathToUtf8(outputPath.extension())) == ".zox") {
+                if (winzox::utils::ToLower(outputPath.extension().u8string()) == ".zox") {
                     outputPath.replace_extension("");
                 }
-                return winzox::utils::PathToUtf8(outputPath);
+                return outputPath.u8string();
             }(),
             config,
             progressCallback);
@@ -363,7 +363,7 @@ void RunShellExtractFiles(const std::string& targetPath) {
         return;
     }
 
-    internal::ExecuteShellExtraction(winzox::utils::PathToUtf8(target), winzox::utils::PathToUtf8(internal::fs::path(selectedFolder)), nullptr);
+    internal::ExecuteShellExtraction(target.u8string(), internal::fs::path(selectedFolder).u8string(), nullptr);
 }
 
 void RunShellExtract(const std::string& targetPath, bool extractHere) {
@@ -373,9 +373,9 @@ void RunShellExtract(const std::string& targetPath, bool extractHere) {
     }
 
     const std::string destination = extractHere
-        ? winzox::utils::PathToUtf8(target.parent_path())
+        ? target.parent_path().u8string()
         : internal::DefaultExtractDestination(target);
-    internal::ExecuteShellExtraction(winzox::utils::PathToUtf8(target), destination, nullptr);
+    internal::ExecuteShellExtraction(target.u8string(), destination, nullptr);
 }
 
 } // namespace winzox::shell

@@ -46,7 +46,7 @@ fs::path ResolveOutputPathForWrite(const fs::path& destinationRoot,
     }
 
     while (fs::exists(candidatePath) && !replaceAll) {
-        const OverwriteDecision decision = overwriteCallback(winzox::utils::PathToUtf8(candidatePath), archiveEntryPath);
+        const OverwriteDecision decision = overwriteCallback(candidatePath.u8string(), archiveEntryPath);
         switch (decision.action) {
         case OverwriteAction::Replace:
             return candidatePath;
@@ -75,27 +75,9 @@ fs::path ResolveOutputPathForWrite(const fs::path& destinationRoot,
     return candidatePath;
 }
 
-// Hard caps used to defuse archive bombs and malformed declared sizes during
-// extraction. These limits apply to every supported archive format.
-constexpr uint64_t kMaxEntryOriginalSize = 64ULL << 30;       // 64 GiB per entry
-constexpr uint64_t kMaxArchiveOriginalSize = 1024ULL << 30;   // 1 TiB total expansion
-constexpr uint64_t kMaxEntryCount = 10ULL * 1000ULL * 1000ULL; // 10M entries
-
 uint64_t CalculateTotalEntryUnits(const std::vector<winzox::archive::ArchiveEntryInfo>& entries) {
-    if (entries.size() > kMaxEntryCount) {
-        throw std::runtime_error("Archive declares too many entries");
-    }
     uint64_t totalUnits = 0;
-    uint64_t totalOriginalBytes = 0;
     for (const auto& entry : entries) {
-        if (entry.originalSize > kMaxEntryOriginalSize) {
-            throw std::runtime_error("Archive entry exceeds the per-entry size cap: " + entry.path);
-        }
-        if (totalOriginalBytes > kMaxArchiveOriginalSize - entry.originalSize) {
-            throw std::runtime_error("Archive total expansion exceeds the cap");
-        }
-        totalOriginalBytes += entry.originalSize;
-
         const uint64_t increment = entry.originalSize > 0 ? entry.originalSize : 1;
         if (totalUnits > (std::numeric_limits<uint64_t>::max)() - increment) {
             throw std::runtime_error("Archive is too large");
@@ -160,17 +142,11 @@ void ExtractGenericArchive(const std::string& filename,
         throw std::runtime_error("Failed to allocate libarchive writer");
     }
 
-    // Defense in depth on extraction: refuse symbolic-link traversal, reject
-    // entries whose path resolves outside the destination via ".." components,
-    // and never honor absolute paths recorded inside the archive itself.
     archive_write_disk_set_options(writer,
                                    ARCHIVE_EXTRACT_TIME |
                                    ARCHIVE_EXTRACT_PERM |
                                    ARCHIVE_EXTRACT_ACL |
-                                   ARCHIVE_EXTRACT_FFLAGS |
-                                   ARCHIVE_EXTRACT_SECURE_SYMLINKS |
-                                   ARCHIVE_EXTRACT_SECURE_NODOTDOT |
-                                   ARCHIVE_EXTRACT_SECURE_NOABSOLUTEPATHS);
+                                   ARCHIVE_EXTRACT_FFLAGS);
 
     if (archive_read_open_filename(reader, filename.c_str(), 10240) != ARCHIVE_OK) {
         const std::string message = archive_error_string(reader) ? archive_error_string(reader) : "unknown libarchive error";
@@ -251,7 +227,7 @@ void ExtractGenericArchive(const std::string& filename,
     archive_write_free(writer);
     archive_read_close(reader);
     archive_read_free(reader);
-    ReportProgress(progressCallback, 1, 1, winzox::utils::PathToUtf8(fs::path(filename).filename()), "Extraction complete");
+    ReportProgress(progressCallback, 1, 1, fs::path(filename).filename().u8string(), "Extraction complete");
 }
 
 void TestGenericArchive(const std::string& filename) {
@@ -394,7 +370,7 @@ void ExtractArchive(const std::string& filename,
             completedUnits += entry.info.originalSize > 0 ? entry.info.originalSize : 1;
             ReportProgress(progressCallback, completedUnits, totalUnits, entry.info.path, "Extracting");
         }
-        ReportProgress(progressCallback, 1, 1, winzox::utils::PathToUtf8(fs::path(filename).filename()), "Extraction complete");
+        ReportProgress(progressCallback, 1, 1, fs::path(filename).filename().u8string(), "Extraction complete");
         return;
     }
 

@@ -37,18 +37,6 @@ constexpr uint8_t kSolidFlag = 0x02;
 constexpr uint8_t kAuthenticatedFlag = 0x04;
 constexpr size_t kAuthenticationTagSize = 32;
 
-// Archive-bomb hardening caps applied during parsing. Any declared field that
-// would force an allocation larger than these values is rejected before we
-// touch the heap.
-constexpr uint64_t kMaxEntryOriginalSize = 64ULL << 30;       // 64 GiB per entry
-constexpr uint64_t kMaxEntryStoredSize = 64ULL << 30;         // 64 GiB stored per entry
-constexpr uint64_t kMaxArchiveOriginalSize = 1024ULL << 30;   // 1 TiB total uncompressed
-constexpr uint32_t kMaxEntryCount = 10u * 1000u * 1000u;      // 10M entries
-constexpr uint64_t kMaxCentralDirectorySize = 256ULL << 20;   // 256 MiB CD cap
-constexpr uint64_t kMaxEncryptedExpansionMargin = 1ULL << 20; // 1 MiB margin for AEAD framing
-constexpr uint32_t kMinExpansionRatioGuard = 1024u;           // any entry whose stored size is
-                                                              // > original*ratio is suspicious
-
 struct LegacyHeader {
     ArchiveMetadata metadata;
     crypto::EncryptionMetadata cryptoMetadata;
@@ -288,14 +276,9 @@ crypto::EncryptionMetadata ReadEncryptionMetadata(const std::vector<uint8_t>& ra
                                                  bool includeIterations) {
     crypto::EncryptionMetadata metadata;
     metadata.salt = ReadBytes(raw, offset, 16);
-    // AEAD modes (v3+) generate a fresh random nonce per Encrypt() call and
-    // store it inline at the start of every ciphertext blob, so we never
-    // serialize a per-archive IV in the header for those algorithms.
-    if (!crypto::IsAeadAlgorithm(algorithm)) {
-        metadata.ivPrimary = ReadBytes(raw, offset, 16);
-        if (algorithm == crypto::EncryptionAlgorithm::Gorgon) {
-            metadata.ivSecondary = ReadBytes(raw, offset, 16);
-        }
+    metadata.ivPrimary = ReadBytes(raw, offset, 16);
+    if (algorithm == crypto::EncryptionAlgorithm::Gorgon) {
+        metadata.ivSecondary = ReadBytes(raw, offset, 16);
     }
     metadata.iterations = includeIterations
         ? ReadValue<uint32_t>(raw, offset)
@@ -309,12 +292,6 @@ crypto::EncryptionMetadata ReadEncryptionMetadata(const std::vector<uint8_t>& ra
 crypto::EncryptionMetadata DeriveDirectoryMetadata(const crypto::EncryptionMetadata& metadata,
                                                    crypto::EncryptionAlgorithm algorithm) {
     crypto::EncryptionMetadata derived = metadata;
-    // For AEAD modes the per-call random nonce makes IV derivation pointless
-    // (and dangerous, since a deterministic XOR mask would defeat the AEAD
-    // freshness guarantees). Skip the masking entirely for those algorithms.
-    if (crypto::IsAeadAlgorithm(algorithm)) {
-        return derived;
-    }
     for (size_t index = 0; index < derived.ivPrimary.size(); ++index) {
         derived.ivPrimary[index] ^= static_cast<unsigned char>(0xA5u + static_cast<unsigned char>(index));
     }
@@ -330,12 +307,6 @@ crypto::EncryptionMetadata DeriveEntryMetadata(const crypto::EncryptionMetadata&
                                                crypto::EncryptionAlgorithm algorithm,
                                                uint32_t entryIndex) {
     crypto::EncryptionMetadata derived = metadata;
-    // Patch 7: AEAD modes use a freshly generated per-entry random nonce
-    // emitted inline by the provider on every Encrypt() call, so the legacy
-    // deterministic XOR-derived IV mask must not be applied here.
-    if (crypto::IsAeadAlgorithm(algorithm)) {
-        return derived;
-    }
     for (size_t index = 0; index < derived.ivPrimary.size(); ++index) {
         const unsigned char mask = static_cast<unsigned char>(
             ((entryIndex >> ((index % sizeof(entryIndex)) * 8)) & 0xFFu) ^ (0x11u + static_cast<unsigned char>(index)));
@@ -370,11 +341,6 @@ LegacyHeader ParseLegacyHeader(const std::vector<uint8_t>& raw) {
     header.metadata.encryptionAlgorithm = static_cast<crypto::EncryptionAlgorithm>(ReadValue<uint8_t>(raw, offset));
     if (header.metadata.encrypted && header.metadata.encryptionAlgorithm == crypto::EncryptionAlgorithm::None) {
         throw std::runtime_error("Archive declares encryption but has no encryption mode");
-    }
-    // Legacy magic predates v3 AEAD modes. Reject anything carrying an AEAD
-    // algorithm id behind a legacy header to avoid spoofed-format confusion.
-    if (header.metadata.encrypted && crypto::IsAeadAlgorithm(header.metadata.encryptionAlgorithm)) {
-        throw std::runtime_error("Legacy archive header cannot carry an AEAD encryption mode");
     }
     header.metadata.defaultAlgorithm = static_cast<compression::CompressionAlgorithm>(ReadValue<uint8_t>(raw, offset));
     header.metadata.createdUnixTime = ReadValue<uint64_t>(raw, offset);
@@ -423,23 +389,9 @@ CurrentHeader ParseCurrentHeader(const std::vector<uint8_t>& raw) {
     if (header.metadata.authenticated && !header.metadata.encrypted) {
         throw std::runtime_error("Authenticated archives must be encrypted");
     }
-    // Patch 1: encrypted WZOX archives written by v3+ MUST carry an authentication
-    // tag. Refuse anything else to defeat the well-known downgrade attack where a
-    // tamperer clears the authentication flag, drops the tag, and recomputes the
-    // unkeyed integrity hash.
-    if (isCurrentFormat && header.metadata.encrypted && !header.metadata.authenticated) {
-        throw std::runtime_error(
-            "Encrypted WZOX archives must include an authentication tag (refusing unauthenticated v3+ archive)");
-    }
     header.metadata.encryptionAlgorithm = static_cast<crypto::EncryptionAlgorithm>(ReadValue<uint8_t>(raw, offset));
     if (header.metadata.encrypted && header.metadata.encryptionAlgorithm == crypto::EncryptionAlgorithm::None) {
         throw std::runtime_error("Archive declares encryption but has no encryption mode");
-    }
-    // ZOX5/ZOX6 magic predates AEAD support; reject AEAD ids in those frames.
-    if (header.metadata.encrypted &&
-        crypto::IsAeadAlgorithm(header.metadata.encryptionAlgorithm) &&
-        !isCurrentFormat) {
-        throw std::runtime_error("Pre-v3 archive header cannot carry an AEAD encryption mode");
     }
     header.metadata.defaultAlgorithm = static_cast<compression::CompressionAlgorithm>(ReadValue<uint8_t>(raw, offset));
     header.metadata.createdUnixTime = ReadValue<uint64_t>(raw, offset);
@@ -575,13 +527,6 @@ DirectoryIndex ParseDirectoryIndex(const std::vector<uint8_t>& raw,
     if (footer.centralDirectoryStoredSize > raw.size() - footer.centralDirectoryOffset) {
         throw std::runtime_error("Archive central directory is truncated");
     }
-    if (footer.centralDirectoryStoredSize > kMaxCentralDirectorySize ||
-        footer.centralDirectoryPlainSize > kMaxCentralDirectorySize) {
-        throw std::runtime_error("Archive central directory exceeds the size cap");
-    }
-    if (footer.entryCount > kMaxEntryCount) {
-        throw std::runtime_error("Archive declares too many entries");
-    }
 
     size_t offset = ToSizeT(footer.centralDirectoryOffset, "Central directory offset");
     std::vector<uint8_t> directoryBytes = ReadBytes(
@@ -638,19 +583,6 @@ DirectoryIndex ParseDirectoryIndex(const std::vector<uint8_t>& raw,
                 ? ReadValue<uint64_t>(directoryBytes, cursor)
                 : entry.storedSize;
             entry.crc32 = ReadValue<uint32_t>(directoryBytes, cursor);
-
-            // Bomb-proofing per central directory entry. We reject any declared
-            // size that exceeds the per-entry / total caps before allocating.
-            if (entry.originalSize > kMaxEntryOriginalSize) {
-                throw std::runtime_error("Archive entry exceeds the per-entry size cap: " + entry.path);
-            }
-            if (entry.storedSize > kMaxEntryStoredSize) {
-                throw std::runtime_error("Archive entry stored size exceeds cap: " + entry.path);
-            }
-            if (entry.encodedSize > kMaxEntryStoredSize + kMaxEncryptedExpansionMargin) {
-                throw std::runtime_error("Archive entry encoded size exceeds cap: " + entry.path);
-            }
-
             index.dataOffsets.push_back(ReadValue<uint64_t>(directoryBytes, cursor));
             index.encodedSizes.push_back(entry.encodedSize);
             index.entries.push_back(std::move(entry));
@@ -1026,11 +958,9 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
 
     if (metadata.encrypted) {
         writeWithContexts(cryptoMetadata.salt.data(), cryptoMetadata.salt.size(), true, true);
-        if (!crypto::IsAeadAlgorithm(metadata.encryptionAlgorithm)) {
-            writeWithContexts(cryptoMetadata.ivPrimary.data(), cryptoMetadata.ivPrimary.size(), true, true);
-            if (metadata.encryptionAlgorithm == crypto::EncryptionAlgorithm::Gorgon) {
-                writeWithContexts(cryptoMetadata.ivSecondary.data(), cryptoMetadata.ivSecondary.size(), true, true);
-            }
+        writeWithContexts(cryptoMetadata.ivPrimary.data(), cryptoMetadata.ivPrimary.size(), true, true);
+        if (metadata.encryptionAlgorithm == crypto::EncryptionAlgorithm::Gorgon) {
+            writeWithContexts(cryptoMetadata.ivSecondary.data(), cryptoMetadata.ivSecondary.size(), true, true);
         }
         writeWithContexts(&cryptoMetadata.iterations, sizeof(cryptoMetadata.iterations), true, true);
     }
@@ -1046,10 +976,7 @@ void CreateArchive(const std::vector<std::string>& inputPaths,
         sizeof(uint32_t) +
         static_cast<uint64_t>(commentLength) +
         static_cast<uint64_t>(metadata.encrypted
-            ? cryptoMetadata.salt.size()
-                + (crypto::IsAeadAlgorithm(metadata.encryptionAlgorithm)
-                    ? 0 : cryptoMetadata.ivPrimary.size() + cryptoMetadata.ivSecondary.size())
-                + sizeof(uint32_t)
+            ? cryptoMetadata.salt.size() + cryptoMetadata.ivPrimary.size() + cryptoMetadata.ivSecondary.size() + sizeof(uint32_t)
             : 0) +
         static_cast<uint64_t>(metadata.solid ? sizeof(uint64_t) : 0);
     const uint64_t dataSectionStoredSize = static_cast<uint64_t>(sections.dataSection.size());

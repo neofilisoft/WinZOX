@@ -149,19 +149,6 @@ std::vector<uint8_t> DecompressLz4MultiThreaded(const std::vector<uint8_t>& data
     size_t offset = 4;
     const uint32_t chunkCount = ReadU32(data, offset);
 
-    // Bomb-proofing: cap declared chunk count and per-chunk size to stop a crafted
-    // header from forcing massive allocations before any actual data is read.
-    constexpr uint32_t kMaxLz4Chunks = 1u << 20;            // ~1M chunks, ~1 TB of plaintext
-    constexpr uint32_t kMaxLz4ChunkPlainSize = 64u << 20;   // 64 MiB per chunk hard cap
-    constexpr uint64_t kMaxLz4TotalPlainSize = 16ULL << 30; // 16 GiB total cap per LZ4 frame
-    if (chunkCount > kMaxLz4Chunks) {
-        throw std::runtime_error("LZ4 payload declares an excessive chunk count");
-    }
-    // Each chunk descriptor consumes 8 bytes (originalSize + compressedSize).
-    if (static_cast<uint64_t>(chunkCount) * 8ULL > static_cast<uint64_t>(data.size())) {
-        throw std::runtime_error("LZ4 chunk descriptor table is truncated");
-    }
-
     struct ChunkDescriptor {
         uint32_t originalSize = 0;
         uint32_t compressedSize = 0;
@@ -170,21 +157,10 @@ std::vector<uint8_t> DecompressLz4MultiThreaded(const std::vector<uint8_t>& data
 
     std::vector<ChunkDescriptor> descriptors(chunkCount);
     uint64_t totalOriginalSize = 0;
-    uint64_t totalCompressedSize = 0;
     for (uint32_t index = 0; index < chunkCount; ++index) {
         descriptors[index].originalSize = ReadU32(data, offset);
         descriptors[index].compressedSize = ReadU32(data, offset);
-        if (descriptors[index].originalSize > kMaxLz4ChunkPlainSize) {
-            throw std::runtime_error("LZ4 chunk declares an excessive plaintext size");
-        }
         totalOriginalSize += descriptors[index].originalSize;
-        totalCompressedSize += descriptors[index].compressedSize;
-        if (totalOriginalSize > kMaxLz4TotalPlainSize) {
-            throw std::runtime_error("LZ4 payload exceeds total plaintext cap");
-        }
-        if (totalCompressedSize > static_cast<uint64_t>(data.size())) {
-            throw std::runtime_error("LZ4 payload is truncated");
-        }
     }
 
     if (totalOriginalSize != expectedSize) {

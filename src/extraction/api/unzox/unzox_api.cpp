@@ -210,7 +210,7 @@ Status ExtractToDirectory(const std::vector<uint8_t>& archiveBytes,
             completedUnits += entry.info.originalSize > 0 ? entry.info.originalSize : 1;
             ReportProgress(progressCallback, completedUnits, totalUnits, entry.info.path, "Extracting");
         }
-        ReportProgress(progressCallback, 1, 1, winzox::utils::PathToUtf8(destinationRoot.filename()), "Extraction complete");
+        ReportProgress(progressCallback, 1, 1, destinationRoot.filename().u8string(), "Extraction complete");
     });
 }
 

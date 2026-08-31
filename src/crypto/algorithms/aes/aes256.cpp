@@ -18,12 +18,6 @@ const IEncryptionProvider& ResolveProvider(EncryptionAlgorithm algorithm) {
         return GetAesProvider();
     case EncryptionAlgorithm::Gorgon:
         return GetGorgonProvider();
-    case EncryptionAlgorithm::Aes256Gcm:
-        return GetAesGcmProvider();
-    case EncryptionAlgorithm::ChaCha20Poly1305:
-        return GetChaCha20Poly1305Provider();
-    case EncryptionAlgorithm::GorgonAead:
-        return GetGorgonAeadProvider();
     case EncryptionAlgorithm::None:
         break;
     }
@@ -32,27 +26,6 @@ const IEncryptionProvider& ResolveProvider(EncryptionAlgorithm algorithm) {
 }
 
 } // namespace
-
-bool IsAeadAlgorithm(EncryptionAlgorithm algorithm) {
-    switch (algorithm) {
-    case EncryptionAlgorithm::Aes256Gcm:
-    case EncryptionAlgorithm::ChaCha20Poly1305:
-    case EncryptionAlgorithm::GorgonAead:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool IsLegacyCbcAlgorithm(EncryptionAlgorithm algorithm) {
-    switch (algorithm) {
-    case EncryptionAlgorithm::Aes256:
-    case EncryptionAlgorithm::Gorgon:
-        return true;
-    default:
-        return false;
-    }
-}
 
 EncryptionAlgorithm ParseEncryptionAlgorithmName(const std::string& value) {
     std::string lower = value;
@@ -63,21 +36,11 @@ EncryptionAlgorithm ParseEncryptionAlgorithmName(const std::string& value) {
     if (lower == "none") {
         return EncryptionAlgorithm::None;
     }
-    if (lower == "aes" || lower == "aes256" || lower == "aes-256" ||
-        lower == "aes-cbc" || lower == "aes256-cbc" || lower == "aes-256-cbc") {
+    if (lower == "aes" || lower == "aes256" || lower == "aes-256") {
         return EncryptionAlgorithm::Aes256;
     }
-    if (lower == "gorgon" || lower == "gorgon-cbc" || lower == "gorgon1") {
+    if (lower == "gorgon") {
         return EncryptionAlgorithm::Gorgon;
-    }
-    if (lower == "aes-gcm" || lower == "aes256-gcm" || lower == "aes-256-gcm") {
-        return EncryptionAlgorithm::Aes256Gcm;
-    }
-    if (lower == "chacha20" || lower == "chacha20-poly1305" || lower == "chacha") {
-        return EncryptionAlgorithm::ChaCha20Poly1305;
-    }
-    if (lower == "gorgon-aead" || lower == "gorgon2" || lower == "gorgon-v2") {
-        return EncryptionAlgorithm::GorgonAead;
     }
 
     throw std::runtime_error("Unsupported encryption algorithm: " + value);
@@ -88,15 +51,9 @@ std::string EncryptionAlgorithmName(EncryptionAlgorithm algorithm) {
     case EncryptionAlgorithm::None:
         return "none";
     case EncryptionAlgorithm::Aes256:
-        return "aes256-cbc";
+        return "aes256";
     case EncryptionAlgorithm::Gorgon:
-        return "gorgon-cbc";
-    case EncryptionAlgorithm::Aes256Gcm:
-        return "aes256-gcm";
-    case EncryptionAlgorithm::ChaCha20Poly1305:
-        return "chacha20-poly1305";
-    case EncryptionAlgorithm::GorgonAead:
-        return "gorgon-aead";
+        return "gorgon";
     }
 
     throw std::runtime_error("Unknown encryption algorithm id");

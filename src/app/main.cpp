@@ -6,10 +6,7 @@
 
 #include <cctype>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <ctime>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -21,126 +18,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
-#include <conio.h>
-#else
-#include <dlfcn.h>
-#include <termios.h>
-#include <unistd.h>
 #endif
-
-#include <filesystem>
 
 namespace {
-
-// ---------------------------------------------------------------------------
-// Optional repair kit (extension shipped as WinZOXRepairKit.dll / libWinZOXRepairKit.so).
-// We load the C ABI dynamically so the CLI works fine when the extension is absent.
-// ---------------------------------------------------------------------------
-constexpr unsigned int kRepairKitMessageSize = 256;
-
-struct RepairKitReport {
-    int file_exists = 0;
-    int format_supported = 0;
-    int is_split_volume = 0;
-    int is_probably_truncated = 0;
-    int can_attempt_repair = 0;
-    int repaired = 0;
-    int rebuilt_footer = 0;
-    uint32_t recovered_entry_count = 0;
-    uint64_t file_size = 0;
-    uint64_t recovered_output_size = 0;
-    char detected_magic[8] = {0};
-    char suggested_action[kRepairKitMessageSize] = {0};
-};
-
-#ifdef _WIN32
-using RepairKitLibHandle = HMODULE;
-RepairKitLibHandle RepairKitOpen(const wchar_t* path) { return ::LoadLibraryW(path); }
-void RepairKitClose(RepairKitLibHandle h) { if (h) ::FreeLibrary(h); }
-template <typename T>
-T RepairKitSym(RepairKitLibHandle h, const char* name) {
-    return reinterpret_cast<T>(::GetProcAddress(h, name));
-}
-#else
-using RepairKitLibHandle = void*;
-RepairKitLibHandle RepairKitOpen(const char* path) { return ::dlopen(path, RTLD_NOW); }
-void RepairKitClose(RepairKitLibHandle h) { if (h) ::dlclose(h); }
-template <typename T>
-T RepairKitSym(RepairKitLibHandle h, const char* name) {
-    return reinterpret_cast<T>(::dlsym(h, name));
-}
-#endif
-
-using AnalyzeFn = int (*)(const char*, RepairKitReport*, char*, size_t);
-using RepairFn = int (*)(const char*, const char*, const char*, RepairKitReport*, char*, size_t);
-using VersionFn = const char* (*)();
-
-RepairKitLibHandle LoadRepairKit() {
-    namespace fs = std::filesystem;
-#ifdef _WIN32
-    const wchar_t* names[] = { L"WinZOXRepairKit.dll" };
-#else
-    const char* names[] = {
-        "libWinZOXRepairKit.so",
-        "./build/extensions/repair_kit/libWinZOXRepairKit.so",
-        "extensions/repair_kit/libWinZOXRepairKit.so",
-    };
-#endif
-    for (auto* name : names) {
-        auto h = RepairKitOpen(name);
-        if (h) return h;
-    }
-    return nullptr;
-}
-
-int RunRepairKit(const std::string& archivePath, const std::string& outputPath, const std::string& password) {
-    auto lib = LoadRepairKit();
-    if (!lib) {
-        std::cerr << "Error: WinZOXRepairKit extension not found. Install the repair kit DLL/so next to zox or in PATH.\n";
-        return 1;
-    }
-    auto versionFn = RepairKitSym<VersionFn>(lib, "winzox_repair_kit_api_version");
-    auto analyzeFn = RepairKitSym<AnalyzeFn>(lib, "winzox_repair_kit_analyze_file");
-    auto repairFn = RepairKitSym<RepairFn>(lib, "winzox_repair_kit_repair_file");
-    if (!analyzeFn || !repairFn) {
-        std::cerr << "Error: WinZOXRepairKit extension is missing required entry points.\n";
-        RepairKitClose(lib);
-        return 1;
-    }
-    if (versionFn) {
-        std::cout << "Repair kit API: " << versionFn() << "\n";
-    }
-    RepairKitReport report{};
-    char err[1024] = {0};
-    int status = analyzeFn(archivePath.c_str(), &report, err, sizeof(err));
-    std::cout << "Analyze: status=" << status
-              << " magic=" << std::string(report.detected_magic, sizeof(report.detected_magic)).c_str()
-              << " size=" << report.file_size
-              << "\n  " << report.suggested_action << "\n";
-    if (err[0] != '\0') {
-        std::cerr << "Analyze error: " << err << "\n";
-    }
-
-    std::memset(&report, 0, sizeof(report));
-    std::memset(err, 0, sizeof(err));
-    status = repairFn(archivePath.c_str(),
-                      outputPath.c_str(),
-                      password.empty() ? nullptr : password.c_str(),
-                      &report,
-                      err,
-                      sizeof(err));
-    if (status == 4 /* REPAIRED */) {
-        std::cout << "Repaired: " << outputPath
-                  << " entries=" << report.recovered_entry_count
-                  << " size=" << report.recovered_output_size << "\n";
-        RepairKitClose(lib);
-        return 0;
-    }
-    std::cerr << "Repair failed (status=" << status << "): " << err << "\n";
-    RepairKitClose(lib);
-    return 2;
-}
-
 
 enum class ArchiveFormat {
     Zox,
@@ -151,8 +31,7 @@ struct Args {
     std::string command;
     std::vector<std::string> positional;
     std::string password;
-    // v3 default: Gorgon-AEAD cascade (ChaCha20-Poly1305 outer + AES-256-GCM inner).
-    winzox::crypto::EncryptionAlgorithm encryptionAlgorithm = winzox::crypto::EncryptionAlgorithm::GorgonAead;
+    winzox::crypto::EncryptionAlgorithm encryptionAlgorithm = winzox::crypto::EncryptionAlgorithm::Aes256;
     bool encryptionAlgorithmExplicit = false;
     ArchiveFormat archiveFormat = ArchiveFormat::Zox;
     size_t splitSize = 0;
@@ -210,19 +89,9 @@ void TryAttachParentConsole() {
     }
 
     g_hasConsole = true;
-    // CWE-775: Check freopen() return values. If any redirect fails, the original
-    // stdio handle is closed by freopen() regardless, so we accept partial success
-    // but log a warning. The handles are owned by the CRT and will be released on
-    // process exit; we do not need to fclose() them explicitly.
-    if (std::freopen("CONIN$", "r", stdin) == nullptr) {
-        // stdin redirect failed; not fatal but console input will be broken.
-    }
-    if (std::freopen("CONOUT$", "w", stdout) == nullptr) {
-        // stdout redirect failed.
-    }
-    if (std::freopen("CONOUT$", "w", stderr) == nullptr) {
-        // stderr redirect failed.
-    }
+    std::freopen("CONIN$", "r", stdin);
+    std::freopen("CONOUT$", "w", stdout);
+    std::freopen("CONOUT$", "w", stderr);
     std::ios::sync_with_stdio();
 }
 
@@ -257,7 +126,6 @@ std::string NormalizeCommand(const std::string& value) {
     if (lower == "extract" || lower == "x") return "extract";
     if (lower == "list" || lower == "l") return "list";
     if (lower == "test" || lower == "t") return "test";
-    if (lower == "repair" || lower == "r") return "repair";
     if (lower == "shell-add") return "shell-add";
     if (lower == "shell-quick-zox") return "shell-quick-zox";
     if (lower == "shell-browse") return "shell-browse";
@@ -366,129 +234,21 @@ bool IsCanceledError(const std::exception& error) {
     return std::string(error.what()) == "Operation canceled";
 }
 
-// Securely read a password from the controlling terminal (echo disabled).
-// Returns empty string if no terminal is attached.
-std::string ReadPasswordFromTty(const std::string& prompt) {
-#ifdef _WIN32
-    if (!_isatty(_fileno(stdin))) {
-        return std::string();
-    }
-    std::cerr << prompt << std::flush;
-    std::string password;
-    while (true) {
-        const int ch = _getch();
-        if (ch == '\r' || ch == '\n' || ch == EOF) {
-            break;
-        }
-        if (ch == 3) {
-            std::cerr << "\n";
-            throw std::runtime_error("Operation canceled");
-        }
-        if (ch == 8 || ch == 127) {
-            if (!password.empty()) password.pop_back();
-            continue;
-        }
-        password.push_back(static_cast<char>(ch));
-    }
-    std::cerr << "\n";
-    return password;
-#else
-    if (!isatty(STDIN_FILENO)) {
-        return std::string();
-    }
-    std::cerr << prompt << std::flush;
-    termios oldSettings {};
-    if (tcgetattr(STDIN_FILENO, &oldSettings) != 0) {
-        return std::string();
-    }
-    termios newSettings = oldSettings;
-    newSettings.c_lflag &= ~static_cast<tcflag_t>(ECHO);
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &newSettings) != 0) {
-        return std::string();
-    }
-    std::string password;
-    std::getline(std::cin, password);
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &oldSettings);
-    std::cerr << "\n";
-    return password;
-#endif
-}
-
-// Resolve a -p argument value into the actual password.
-// Special tokens:
-//   "-"           => read first line from stdin
-//   "@<path>"     => read first line from a file (mode 0400 recommended)
-//   "env:<NAME>"  => read from environment variable
-//   ""            => prompt interactively if a TTY is attached
-// Anything else is treated as the literal password (deprecated; warns to stderr).
-std::string ResolvePassword(const std::string& spec, bool sensitiveContext) {
-    if (spec == "-") {
-        std::string line;
-        if (!std::getline(std::cin, line)) {
-            throw std::runtime_error("Failed to read password from stdin");
-        }
-        return line;
-    }
-    if (!spec.empty() && spec.front() == '@') {
-        const std::string path = spec.substr(1);
-        // CWE-23: Canonicalize and validate the path to prevent directory traversal.
-        // std::filesystem::canonical() resolves symlinks and ".." components;
-        // it throws if the path does not exist, which we re-throw as a clear message.
-        std::filesystem::path canonPath;
-        try {
-            canonPath = std::filesystem::canonical(std::filesystem::path(path));
-        } catch (const std::filesystem::filesystem_error&) {
-            throw std::runtime_error("Cannot open password file (path invalid or does not exist): " + path);
-        }
-        std::ifstream input(canonPath);
-        if (!input) {
-            throw std::runtime_error("Cannot open password file: " + canonPath.string());
-        }
-        std::string line;
-        std::getline(input, line);
-        return line;
-    }
-    if (spec.rfind("env:", 0) == 0) {
-        const std::string variable = spec.substr(4);
-        const char* value = std::getenv(variable.c_str());
-        if (value == nullptr) {
-            throw std::runtime_error("Password environment variable is not set: " + variable);
-        }
-        return std::string(value);
-    }
-    if (!spec.empty()) {
-        if (sensitiveContext) {
-            std::cerr << "[warn] passing a password as a command-line argument is insecure; "
-                      << "use -p - (stdin), -p @<file>, or -p env:<NAME> instead.\n";
-        }
-        return spec;
-    }
-    // Empty: try interactive prompt.
-    return ReadPasswordFromTty("Password: ");
-}
-
 void PrintUsage() {
-    std::cout << "WinZOX v3.1.0 - Modular Archiver\n";
+    std::cout << "WinZOX v3.1.1 - Modular Archiver\n";
     std::cout << "Usage:\n";
-    std::cout << "  zox add <input_path> <output_base> [options]\n";
+    std::cout << "  zox add <input_path> [input_path2 ...] <output_base> [options]\n";
     std::cout << "  zox extract <archive_file> <output_folder> [-p password]\n";
     std::cout << "  zox list <archive_file> [-p password]\n";
     std::cout << "  zox test <archive_file> [-p password]\n";
-    std::cout << "  zox repair <archive_file> <output_archive>\n";
-    std::cout << "                             Rebuild the central directory of a damaged WZOX archive\n";
-    std::cout << "                             (loads the WinZOXRepairKit extension at runtime)\n";
     std::cout << "  zox shell-add <target_path>\n";
     std::cout << "  zox shell-browse <archive_file>\n";
     std::cout << "  zox shell-extract-files <archive_file>\n";
     std::cout << "\n";
     std::cout << "Options for add:\n";
     std::cout << "  --format <zox|zip>         Output archive format (default: zox)\n";
-    std::cout << "  -p <password|-|@file|env:NAME>\n";
-    std::cout << "                             Encrypt the archive. Use '-' to read the password from stdin,\n";
-    std::cout << "                             '@<file>' to read it from a file, 'env:<NAME>' to read it from\n";
-    std::cout << "                             an environment variable, or pass an empty value to prompt.\n";
-    std::cout << "  --encrypt <aes|gorgon|aes-gcm|chacha20|gorgon-aead>\n";
-    std::cout << "                             Select the encryption algorithm when -p is used\n";
+    std::cout << "  -p <password>              Encrypt the archive\n";
+    std::cout << "  --encrypt <aes|gorgon>     Select the encryption algorithm when -p is used\n";
     std::cout << "  -s <size>                  Split size in bytes or with k/m/g suffix\n";
     std::cout << "  --algo <zstd|zlib|lz4|lzma2|store>   Default algorithm for the whole archive\n";
     std::cout << "  --preset <fast|normal|maximum|ultra>  Zstd speed preset ranges: 3-5 / 8-12 / 15-20 / 22-30\n";
@@ -646,7 +406,9 @@ Args ParseArgs(const std::vector<std::string>& argv) {
     }
 
     const size_t positionalCount = args.positional.size();
-    if (args.command == "add" || args.command == "extract") {
+    if (args.command == "add") {
+        args.valid = positionalCount >= 2;
+    } else if (args.command == "extract") {
         args.valid = positionalCount == 2;
     } else if (args.command == "shell-add" ||
                args.command == "shell-quick-zox" ||
@@ -659,8 +421,6 @@ Args ParseArgs(const std::vector<std::string>& argv) {
         args.valid = positionalCount == 1;
     } else if (args.command == "list" || args.command == "test") {
         args.valid = positionalCount == 1;
-    } else if (args.command == "repair") {
-        args.valid = positionalCount == 2;
     } else {
         args.error = "Unknown command: " + args.command;
         return args;
@@ -688,7 +448,7 @@ Args ParseArgs(const std::vector<std::string>& argv) {
         !args.password.empty() &&
         args.encryptionAlgorithm == winzox::crypto::EncryptionAlgorithm::None) {
         args.valid = false;
-        args.error = "--encrypt must be one of aes-gcm, chacha20, gorgon-aead, aes-cbc, gorgon-cbc when -p is used";
+        args.error = "--encrypt must be aes or gorgon when -p is used";
     }
 
     if (args.command != "add" && args.encryptionAlgorithmExplicit) {
@@ -751,20 +511,7 @@ Args ParseArgs(const std::vector<std::string>& argv) {
 } // namespace
 
 int RunApp(const std::vector<std::string>& argv) {
-    Args args = ParseArgs(argv);
-
-    // Resolve special password tokens (-, @file, env:NAME) once at startup so that
-    // downstream code never has to deal with them. We only do this when the user
-    // explicitly provided -p; for unencrypted archives the empty string flows
-    // straight through without prompting.
-    if (args.valid && !args.password.empty()) {
-        try {
-            args.password = ResolvePassword(args.password, /*sensitiveContext=*/true);
-        } catch (const std::exception& error) {
-            args.valid = false;
-            args.error = error.what();
-        }
-    }
+    const Args args = ParseArgs(argv);
 
     if (!args.valid || args.command == "help") {
         if (!args.error.empty()) {
@@ -794,10 +541,16 @@ int RunApp(const std::vector<std::string>& argv) {
             config.comment = args.comment;
             config.fileOverrides = args.fileOverrides;
 
+            // Last positional arg is the output base; all preceding args are input paths
+            const std::string outputBase = args.positional.back();
+            const std::vector<std::string> inputPaths(
+                args.positional.begin(),
+                args.positional.end() - 1);
+
             if (args.archiveFormat == ArchiveFormat::Zip) {
-                winzox::archive::CreateZipArchive(args.positional[0], args.positional[1], config);
+                winzox::archive::CreateZipArchive(inputPaths, outputBase, config);
             } else {
-                winzox::archive::CreateArchive(args.positional[0], args.positional[1], config);
+                winzox::archive::CreateArchive(inputPaths, outputBase, config);
             }
         } else if (args.command == "extract") {
             winzox::extraction::ExtractArchive(args.positional[0], args.positional[1], args.password);
@@ -809,9 +562,6 @@ int RunApp(const std::vector<std::string>& argv) {
         } else if (args.command == "test") {
             winzox::extraction::TestArchive(args.positional[0], args.password);
             std::cout << "Archive passed integrity checks.\n";
-        } else if (args.command == "repair") {
-            int rc = RunRepairKit(args.positional[0], args.positional[1], args.password);
-            return rc;
         } else if (args.command == "shell-add") {
             winzox::shell::RunShellAddDialog(args.positional);
         } else if (args.command == "shell-quick-zox") {
